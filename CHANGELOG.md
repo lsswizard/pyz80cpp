@@ -21,7 +21,13 @@ All notable changes to this project will be documented in this file.
 - `cpu.io_read(port)` — direct I/O port read for machine code
 - `cpu.io_write(port, value)` — direct I/O port write for machine code
 - `cpu.current_opcode` — read-only property exposing the last executed opcode byte
+- `cpu.last_read_addr` — read-only property exposing the last memory read address (bus snooping)
 - `cpu.add_cycles(count)` — inject contention T-states from machine code
+- `cpu.set_on_reti_callback(cb)` — RETI callback for interrupt daisy chaining (Z80PIO/Z80CTC)
+- `cpu.set_on_get_int_vector_callback(cb)` — machine provides interrupt vector on demand
+- `cpu.mark_addrs(addr, size, marks)` — mark memory ranges for breakpoints/self-mod code
+- `cpu.unmark_addrs(addr, size, marks)` — clear memory marks
+- `cpu.get_addr_mark(addr)` — query marks at a specific address
 - `FLAG_F5` and `FLAG_F3` constants for undocumented flag bits
 - `MACHINE_STATE_SIZE` constant (reserved for future save state support)
 - `PythonBus` with internal 64KB memory — no external bus object required

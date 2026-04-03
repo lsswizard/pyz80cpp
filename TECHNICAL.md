@@ -105,6 +105,7 @@ cpu.IM = 2          # Set interrupt mode 2
 | `nmi_pending` | `bool` | NMI pending flag (read/write) |
 | `interrupt_data` | `int` | Data bus value for next interrupt (read/write) |
 | `current_opcode` | `int` | Last executed opcode byte (after prefix resolution, read-only) |
+| `last_read_addr` | `int` | Last memory address read by the CPU (read-only, for bus snooping) |
 | `regs` | `Regs` | Nested register object (alternative to flat API) |
 
 #### Memory Access
@@ -139,6 +140,40 @@ cpu.set_on_output_callback(lambda port, value: None)
 ```
 
 The callbacks receive the 16-bit port address. The input callback must return an 8-bit value. The output callback receives the value being written.
+
+#### Advanced Callbacks
+
+| Method | Description |
+|---|---|
+| `set_on_reti_callback(cb)` | Called when RETI executes. Used for interrupt daisy chain release (Z80PIO, Z80CTC). |
+| `set_on_get_int_vector_callback(cb)` | Called during INT acknowledge. Returns the interrupt vector byte for IM2. Alternative to `trigger_interrupt(data)`. |
+
+```python
+cpu.set_on_reti_callback(lambda: pio_release_daisy_chain())
+cpu.set_on_get_int_vector_callback(lambda: 0x42)  # Vector byte for IM2
+```
+
+#### Memory Marking
+
+Mark memory ranges with bit flags for breakpoints, self-modifying code detection, or code/data tagging:
+
+| Method | Description |
+|---|---|
+| `mark_addrs(addr, size, marks)` | Set bit flags on a memory range. |
+| `unmark_addrs(addr, size, marks)` | Clear bit flags from a memory range. |
+| `get_addr_mark(addr)` | Get the current mark byte at an address. |
+
+```python
+# Mark ROM region
+cpu.mark_addrs(0x0000, 0x4000, 0x01)  # 0x01 = ROM
+
+# Mark code region for self-mod detection
+cpu.mark_addrs(0x8000, 0x2000, 0x02)  # 0x02 = CODE
+
+# Check if address is marked
+if cpu.get_addr_mark(0x8100) & 0x02:
+    cpu.invalidate_all()  # Self-modifying code detected
+```
 
 #### Decoder Cache
 
@@ -189,11 +224,19 @@ def bus_read(self, addr, t_state):
 
 The CPU does **not** auto-generate interrupts. The machine must:
 
-1. Call `trigger_interrupt(data)` to assert INT with the appropriate data bus value
+1. Call `trigger_interrupt(data)` to assert INT with the appropriate data bus value, or set `set_on_get_int_vector_callback(cb)` to provide the vector on demand
 2. The interrupt is sampled on the next `step()` after the current instruction completes
 3. If IFF1 is set, the interrupt is acknowledged (EI deferral is respected)
 
-For IM 2, the `data` parameter determines the vector table address: `vector_addr = (I << 8) | (data & 0xFE)`.
+For IM 2, the `data` parameter (or the value returned by the vector callback) determines the vector table address: `vector_addr = (I << 8) | (data & 0xFE)`.
+
+### Interrupt Daisy Chaining
+
+Systems with multiple Z80 peripherals (Z80PIO, Z80CTC, Z80SIO) use a daisy chain to arbitrate interrupts. Set the RETI callback to release the chain:
+
+```python
+cpu.set_on_reti_callback(lambda: daisy_chain_released())
+```
 
 ### EI Deferral
 

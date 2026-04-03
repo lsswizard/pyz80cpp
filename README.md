@@ -8,6 +8,9 @@ A high-performance Z80 CPU emulator implemented in C++ with raw CPython bindings
 - **Machine-agnostic design** — zero machine-specific code in the C++ core
 - **Flat register API** — `cpu.A`, `cpu.PC`, `cpu.HL`, `cpu.IFF1`, etc. directly on the CPU object
 - **I/O callbacks** — `set_on_input_callback()` / `set_on_output_callback()` for machine I/O
+- **RETI callback** — interrupt daisy chaining support (Z80PIO, Z80CTC)
+- **Interrupt vector callback** — machine provides vector on demand during INT acknowledge
+- **Memory marking** — `mark_addrs()` / `unmark_addrs()` for breakpoints and self-modifying code detection
 - **Contention support** — `add_cycles()` for ULA wait states and memory contention
 - **Interrupt control** — machine-triggered `trigger_interrupt(data)` and `trigger_nmi()`
 - **Full instruction set** — all 256 base opcodes + CB, ED, DD, FD prefixes + DDCB/FDCB
@@ -68,18 +71,24 @@ class MyMachine:
         self.cpu = Z80CPU()
         self.cpu.set_on_input_callback(self.io_read)
         self.cpu.set_on_output_callback(self.io_write)
+        self.cpu.set_on_reti_callback(self.on_reti)  # Daisy chain support
+        self.cpu.set_on_get_int_vector_callback(self.get_int_vector)
 
     def io_read(self, port):
-        # Return data from keyboard, PSG, VDP, etc.
         return 0xFF
 
     def io_write(self, port, value):
-        # Write to PSG, ULA, VDP, etc.
         pass
 
+    def on_reti(self):
+        # Release interrupt daisy chain (Z80PIO/Z80CTC)
+        pass
+
+    def get_int_vector(self):
+        # Return interrupt vector for IM2
+        return 0xFF
+
     def run_frame(self):
-        # Execute one video frame's worth of T-states
-        # Assert interrupts at the correct scanline
         self.cpu.trigger_interrupt(0xFF)
         self.cpu.run_frame(69888)  # Spectrum: 69888 T-states per frame
 ```

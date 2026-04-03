@@ -11,20 +11,30 @@ public:
     PyObject* py_obj;
     PyObject* input_cb;
     PyObject* output_cb;
+    PyObject* reti_cb;
+    PyObject* get_int_vector_cb;
     uint8_t memory[65536];
+    uint8_t addr_marks[65536];  // Memory marks for breakpoints/self-mod code
+    uint16_t last_read_addr;
 
-    PythonBus(PyObject* obj) : py_obj(obj), input_cb(nullptr), output_cb(nullptr) {
+    PythonBus(PyObject* obj) : py_obj(obj), input_cb(nullptr), output_cb(nullptr),
+                               reti_cb(nullptr), get_int_vector_cb(nullptr),
+                               last_read_addr(0) {
         Py_INCREF(py_obj);
         std::memset(memory, 0xFF, sizeof(memory));
+        std::memset(addr_marks, 0, sizeof(addr_marks));
     }
 
     ~PythonBus() override {
         Py_DECREF(py_obj);
         Py_XDECREF(input_cb);
         Py_XDECREF(output_cb);
+        Py_XDECREF(reti_cb);
+        Py_XDECREF(get_int_vector_cb);
     }
 
     uint8_t bus_read(uint16_t addr, int t_state) override {
+        last_read_addr = addr;
         if (py_obj == Py_None) {
             return memory[addr & 0xFFFF];
         }
@@ -350,6 +360,59 @@ static PyObject* Z80CPU_set_on_output_callback(Z80CPUObject* self, PyObject* arg
     Py_RETURN_NONE;
 }
 
+static PyObject* Z80CPU_set_on_reti_callback(Z80CPUObject* self, PyObject* args) {
+    PyObject* cb;
+    if (!PyArg_ParseTuple(args, "O", &cb)) return nullptr;
+    if (self->py_bus) {
+        Py_XDECREF(self->py_bus->reti_cb);
+        Py_INCREF(cb);
+        self->py_bus->reti_cb = cb;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_set_on_get_int_vector_callback(Z80CPUObject* self, PyObject* args) {
+    PyObject* cb;
+    if (!PyArg_ParseTuple(args, "O", &cb)) return nullptr;
+    if (self->py_bus) {
+        Py_XDECREF(self->py_bus->get_int_vector_cb);
+        Py_INCREF(cb);
+        self->py_bus->get_int_vector_cb = cb;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_mark_addrs(Z80CPUObject* self, PyObject* args) {
+    unsigned int addr, size, marks;
+    if (!PyArg_ParseTuple(args, "III", &addr, &size, &marks)) return nullptr;
+    if (self->py_bus) {
+        for (unsigned i = 0; i < size && (addr + i) < 65536; i++) {
+            self->py_bus->addr_marks[(addr + i) & 0xFFFF] |= (uint8_t)marks;
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_unmark_addrs(Z80CPUObject* self, PyObject* args) {
+    unsigned int addr, size, marks;
+    if (!PyArg_ParseTuple(args, "III", &addr, &size, &marks)) return nullptr;
+    if (self->py_bus) {
+        for (unsigned i = 0; i < size && (addr + i) < 65536; i++) {
+            self->py_bus->addr_marks[(addr + i) & 0xFFFF] &= ~(uint8_t)marks;
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_get_addr_mark(Z80CPUObject* self, PyObject* args) {
+    unsigned int addr;
+    if (!PyArg_ParseTuple(args, "I", &addr)) return nullptr;
+    if (self->py_bus) {
+        return PyLong_FromLong(self->py_bus->addr_marks[addr & 0xFFFF]);
+    }
+    return PyLong_FromLong(0);
+}
+
 // Memory View
 static PyObject* Z80CPU_get_memory_view(Z80CPUObject* self) {
     if (!self->cpu->_mem) {
@@ -584,6 +647,14 @@ static int Z80CPU_set_instruction_count(Z80CPUObject* self, PyObject* value, voi
     return 0;
 }
 
+static PyObject* Z80CPU_get_last_read_addr(Z80CPUObject* self, void* closure) {
+    uint16_t addr = 0;
+    if (self->py_bus) {
+        addr = self->py_bus->last_read_addr;
+    }
+    return PyLong_FromLong(addr);
+}
+
 static PyGetSetDef Z80CPU_getsetters[] = {
     // 8-bit registers
     {"A", (getter)Z80CPU_get_A, (setter)Z80CPU_set_A, "Accumulator", NULL},
@@ -630,6 +701,7 @@ static PyGetSetDef Z80CPU_getsetters[] = {
     {"interrupt_data", (getter)Z80CPU_get_interrupt_data, (setter)Z80CPU_set_interrupt_data, "Interrupt data bus value", NULL},
     {"instruction_count", (getter)Z80CPU_get_instruction_count, (setter)Z80CPU_set_instruction_count, "Instruction counter", NULL},
     {"current_opcode", (getter)Z80CPU_get_current_opcode, NULL, "Last executed opcode byte", NULL},
+    {"last_read_addr", (getter)Z80CPU_get_last_read_addr, NULL, "Last memory read address", NULL},
     {NULL}
 };
 
@@ -651,6 +723,11 @@ static PyMethodDef Z80CPU_methods[] = {
     {"run_instructions", (PyCFunction)Z80CPU_run_instructions, METH_VARARGS, "Run N instructions"},
     {"io_read", (PyCFunction)Z80CPU_io_read, METH_VARARGS, "Read I/O port"},
     {"io_write", (PyCFunction)Z80CPU_io_write, METH_VARARGS, "Write I/O port"},
+    {"set_on_reti_callback", (PyCFunction)Z80CPU_set_on_reti_callback, METH_VARARGS, "Set RETI callback"},
+    {"set_on_get_int_vector_callback", (PyCFunction)Z80CPU_set_on_get_int_vector_callback, METH_VARARGS, "Set INT vector callback"},
+    {"mark_addrs", (PyCFunction)Z80CPU_mark_addrs, METH_VARARGS, "Mark memory addresses"},
+    {"unmark_addrs", (PyCFunction)Z80CPU_unmark_addrs, METH_VARARGS, "Unmark memory addresses"},
+    {"get_addr_mark", (PyCFunction)Z80CPU_get_addr_mark, METH_VARARGS, "Get address mark"},
     {NULL}
 };
 
