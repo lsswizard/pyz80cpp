@@ -230,6 +230,7 @@ int CPU::step() {
         }
     }
 
+    int start_cycles = cycles;
     int t = slot.handler(*this);
 
     // Q factor tracking
@@ -246,7 +247,19 @@ int CPU::step() {
 
     cycles += t;
     instruction_count++;
-    return t;
+    // Return total cycles consumed including contention delays
+    // (bus callbacks may add to cycles during handler execution)
+    return cycles - start_cycles;
+}
+
+int CPU::run_frame(int t_states_per_frame) {
+    int start_cycles = cycles;
+    int target = cycles + t_states_per_frame;
+
+    while (cycles < target) {
+        step();
+    }
+    return cycles - start_cycles;
 }
 
 int CPU::run(int max_cycles) {

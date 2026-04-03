@@ -34,6 +34,8 @@ public:
     int step();
     int run(int max_cycles);
     int run_instructions(int count);
+    int run_frame(int t_states_per_frame);
+    void add_cycles(int count) { cycles += count; }
     void trigger_interrupt(uint8_t data);
     void trigger_nmi();
     uint8_t read_reg8(int reg);

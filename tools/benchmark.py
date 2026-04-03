@@ -1,6 +1,7 @@
 """
 Z80 Core Benchmark
 Compares Python vs C++ core performance.
+Uses machine-agnostic API: cpu.write_byte, cpu.step(), cpu.run().
 """
 
 import time
@@ -8,17 +9,17 @@ import sys
 
 sys.path.insert(0, ".")
 
-from core._pyz80 import Z80CPU, SimpleBus
+from core import Z80CPU
 
 
-def create_program(bus, program: list[int], start: int = 0) -> None:
+def create_program(cpu, program: list[int], start: int = 0) -> None:
     for i, op in enumerate(program):
-        bus[start + i] = op
+        cpu.write_byte(start + i, op)
 
 
-def bench_step(bus, program, cycles_target=100_000, label=""):
-    create_program(bus, program)
-    cpu = Z80CPU(bus)
+def bench_step(program, cycles_target=100_000, label=""):
+    cpu = Z80CPU()
+    create_program(cpu, program)
     cpu.reset()
 
     start = time.perf_counter()
@@ -32,14 +33,12 @@ def bench_step(bus, program, cycles_target=100_000, label=""):
     real_35 = ips / 875_000  # real Z80 @ 3.5MHz ~875K instr/sec
 
     print(f"  {label:30s} {mips:7.2f} MIPS  ({ips:>14,.0f} IPS)  {real_35:>7.1f}x real")
-
-    cpu.reset()
     return ips
 
 
-def bench_run(bus, program, cycles_target=1_000_000, label=""):
-    create_program(bus, program)
-    cpu = Z80CPU(bus)
+def bench_run(program, cycles_target=1_000_000, label=""):
+    cpu = Z80CPU()
+    create_program(cpu, program)
     cpu.reset()
 
     start = time.perf_counter()
@@ -64,8 +63,6 @@ def main():
     print("=" * 70)
     print("Z80 C++ Core Benchmark")
     print("=" * 70)
-
-    bus = SimpleBus()
 
     # Programs for each benchmark
     programs = {
@@ -122,28 +119,27 @@ def main():
 
     print("\n--- step() per-instruction benchmarks (50K cycles each) ---\n")
     for name, prog in programs.items():
-        bench_step(bus, prog, cycles_target=50_000, label=name)
+        bench_step(prog, cycles_target=50_000, label=name)
 
     print("\n--- batch run() benchmarks (1M cycles each) ---\n")
     for name, prog in programs.items():
-        bench_run(bus, prog, cycles_target=1_000_000, label=f"{name}")
+        bench_run(prog, cycles_target=1_000_000, label=f"{name}")
 
     # Large-scale batch benchmark
     print("\n--- Large-scale batch benchmark ---\n")
-    create_program(
-        bus,
-        [
-            0x06,
-            0x00,  # LD B, 0
-            0x3C,  # INC A
-            0x05,  # DEC B
-            0xC2,
-            0x02,
-            0x00,  # JP NZ, 2
-            0x76,  # HALT
-        ],
-    )
-    cpu = Z80CPU(bus)
+    halt_prog = [
+        0x06,
+        0x00,  # LD B, 0
+        0x3C,  # INC A
+        0x05,  # DEC B
+        0xC2,
+        0x02,
+        0x00,  # JP NZ, 2
+        0x76,  # HALT
+    ]
+
+    cpu = Z80CPU()
+    create_program(cpu, halt_prog)
     cpu.reset()
 
     # Run 10M cycles

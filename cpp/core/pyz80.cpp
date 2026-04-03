@@ -1,243 +1,729 @@
-#include <nanobind/nanobind.h>
-#include <nanobind/ndarray.h>
-#include <nanobind/stl/shared_ptr.h>
+#include <Python.h>
+#include <structmember.h>
 #include "cpu.h"
-#include "bus.h"
 #include "registers.h"
-#include "flags.h"
 #include <memory>
 
-namespace nb = nanobind;
-
-static nb::object make_bytes_view(const uint8_t* data, size_t size) {
-    return nb::bytes(reinterpret_cast<const char*>(data), size);
-}
-
-// ============================================================
-// PythonCallbackBus: wraps Python callables as a C++ Bus
-// Uses nb::object to hold references to Python callables
-// Acquires GIL before calling Python functions
-// ============================================================
-class PythonCallbackBus : public Bus {
+// ── Python callback bus ─────────────────────────────────────────────
+// Bridges a Python object implementing the Z80Bus protocol to the C++ Bus interface.
+class PythonBus : public Bus {
 public:
-    nb::object _read_fn;
-    nb::object _write_fn;
-    nb::object _io_read_fn;
-    nb::object _io_write_fn;
+    PyObject* py_obj;
+    PyObject* input_cb;
+    PyObject* output_cb;
+    uint8_t memory[65536];
 
-    PythonCallbackBus(nb::object read_fn, nb::object write_fn,
-                      nb::object io_read_fn, nb::object io_write_fn)
-        : _read_fn(std::move(read_fn)),
-          _write_fn(std::move(write_fn)),
-          _io_read_fn(std::move(io_read_fn)),
-          _io_write_fn(std::move(io_write_fn)) {}
+    PythonBus(PyObject* obj) : py_obj(obj), input_cb(nullptr), output_cb(nullptr) {
+        Py_INCREF(py_obj);
+        std::memset(memory, 0xFF, sizeof(memory));
+    }
+
+    ~PythonBus() override {
+        Py_DECREF(py_obj);
+        Py_XDECREF(input_cb);
+        Py_XDECREF(output_cb);
+    }
 
     uint8_t bus_read(uint16_t addr, int t_state) override {
-        nb::gil_scoped_acquire gil;
-        return nb::cast<uint8_t>(_read_fn(addr, t_state));
+        if (py_obj == Py_None) {
+            return memory[addr & 0xFFFF];
+        }
+        PyObject* result = PyObject_CallMethod(py_obj, "bus_read", "ii", addr, t_state);
+        if (!result) {
+            PyErr_Print();
+            return 0xFF;
+        }
+        uint8_t val = (uint8_t)PyLong_AsLong(result);
+        Py_DECREF(result);
+        return val;
     }
 
     void bus_write(uint16_t addr, uint8_t value, int t_state) override {
-        nb::gil_scoped_acquire gil;
-        _write_fn(addr, value, t_state);
+        if (py_obj == Py_None) {
+            memory[addr & 0xFFFF] = value;
+            return;
+        }
+        PyObject* result = PyObject_CallMethod(py_obj, "bus_write", "iIi", addr, value, t_state);
+        Py_XDECREF(result);
     }
 
     uint8_t bus_io_read(uint16_t port, int t_state) override {
-        nb::gil_scoped_acquire gil;
-        return nb::cast<uint8_t>(_io_read_fn(port, t_state));
+        if (input_cb) {
+            PyObject* result = PyObject_CallFunction(input_cb, "I", port);
+            if (!result) {
+                PyErr_Print();
+                return 0xFF;
+            }
+            uint8_t val = (uint8_t)PyLong_AsLong(result);
+            Py_DECREF(result);
+            return val;
+        }
+        if (py_obj == Py_None) {
+            return 0xFF;
+        }
+        PyObject* result = PyObject_CallMethod(py_obj, "bus_io_read", "Ii", port, t_state);
+        if (!result) {
+            PyErr_Print();
+            return 0xFF;
+        }
+        uint8_t val = (uint8_t)PyLong_AsLong(result);
+        Py_DECREF(result);
+        return val;
     }
 
     void bus_io_write(uint16_t port, uint8_t value, int t_state) override {
-        nb::gil_scoped_acquire gil;
-        _io_write_fn(port, value, t_state);
+        if (output_cb) {
+            PyObject_CallFunction(output_cb, "II", port, value);
+            return;
+        }
+        if (py_obj == Py_None) {
+            return;
+        }
+        PyObject* result = PyObject_CallMethod(py_obj, "bus_io_write", "IIi", port, value, t_state);
+        Py_XDECREF(result);
     }
 };
 
-// ============================================================
-// CPUWrapper: wraps CPU and keeps reference to Python bus
-// ============================================================
-class CPUWrapper {
-public:
-    nb::object _py_bus;
-    CPU _cpu;
+typedef struct {
+    PyObject_HEAD
+    CPU* cpu;
+    PythonBus* py_bus;  // Non-null if we're using a Python bus
+} Z80CPUObject;
 
-    CPUWrapper() : _cpu(nullptr) {}
+// ── Registers wrapper type ──────────────────────────────────────────
+typedef struct {
+    PyObject_HEAD
+    CPU* cpu;
+} RegsObject;
 
-    CPUWrapper(nb::object bus) : _py_bus(std::move(bus)), _cpu(nullptr) {
-        Bus* cpp_bus = nullptr;
-        
-        // Check for SimpleBus first
-        if (nb::isinstance<SimpleBus>(_py_bus)) {
-            cpp_bus = &nb::cast<SimpleBus&>(_py_bus);
-        } 
-        // Check for our PythonCallbackBus
-        else if (nb::isinstance<PythonCallbackBus>(_py_bus)) {
-            cpp_bus = &nb::cast<PythonCallbackBus&>(_py_bus);
-        }
-        // Generic Bus - try to get the pointer
-        else if (nb::isinstance<Bus>(_py_bus)) {
-            cpp_bus = &nb::cast<Bus&>(_py_bus);
-        }
-        
-        _cpu.bus = cpp_bus;
-        _cpu._owns_bus = false;  // External bus - don't delete it
-        // Re-check if this is a SimpleBus for fast path
-        _cpu._is_simple_bus = false;
-        _cpu._mem = nullptr;
-        if (cpp_bus) {
-            auto* sb = dynamic_cast<SimpleBus*>(cpp_bus);
-            if (sb) {
-                _cpu._mem = sb->memory;
-                _cpu._is_simple_bus = true;
-            }
-        }
-    }
+static void Regs_dealloc(RegsObject* self) {
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
 
-    int step() { return _cpu.step(); }
-    int run(int max_cycles) { return _cpu.run(max_cycles); }
-    int run_instructions(int count) { return _cpu.run_instructions(count); }
-    void reset() { _cpu.reset(); }
-    void trigger_interrupt(uint8_t data) { _cpu.trigger_interrupt(data); }
-    void trigger_nmi() { _cpu.trigger_nmi(); }
-    uint8_t read_byte(uint16_t addr) { return _cpu._bus_read(addr, _cpu.cycles); }
-    void write_byte(uint16_t addr, uint8_t val) { _cpu._bus_write(addr, val, _cpu.cycles); }
-    uint8_t io_read(uint16_t port) { return _cpu._bus_io_read(port, _cpu.cycles); }
-    void io_write(uint16_t port, uint8_t val) { _cpu._bus_io_write(port, val, _cpu.cycles); }
-    Registers& get_regs() { return _cpu.regs; }
-    Bus* get_bus() { return _cpu.bus; }
+// 8-bit registers
+#define REG8_GETTER(name) \
+static PyObject* Regs_get_##name(RegsObject* self, void* closure) { \
+    return PyLong_FromLong(self->cpu->regs.name); \
+} \
+static int Regs_set_##name(RegsObject* self, PyObject* value, void* closure) { \
+    self->cpu->regs.name = (uint8_t)PyLong_AsLong(value); \
+    return 0; \
+}
 
-    void invalidate_range(uint16_t start, uint16_t end) {
-        for (uint16_t addr = start; addr != static_cast<uint16_t>(end + 1); addr++) {
-            _cpu.decoder.invalidate(addr);
-        }
-    }
-    void invalidate_cache() { _cpu.decoder.invalidate_all(); }
-    void invalidate_all() { _cpu.decoder.invalidate_all(); }
+REG8_GETTER(A)
+REG8_GETTER(F)
+REG8_GETTER(B)
+REG8_GETTER(C)
+REG8_GETTER(D)
+REG8_GETTER(E)
+REG8_GETTER(H)
+REG8_GETTER(L)
+REG8_GETTER(Ap)
+REG8_GETTER(Fp)
+REG8_GETTER(Bp)
+REG8_GETTER(Cp)
+REG8_GETTER(Dp)
+REG8_GETTER(Ep)
+REG8_GETTER(Hp)
+REG8_GETTER(Lp)
+REG8_GETTER(I)
+REG8_GETTER(R)
+REG8_GETTER(Q)
+REG8_GETTER(LAST_Q)
+
+// 16-bit registers
+#define REG16_GETTER(name) \
+static PyObject* Regs_get_##name(RegsObject* self, void* closure) { \
+    return PyLong_FromLong(self->cpu->regs.name); \
+} \
+static int Regs_set_##name(RegsObject* self, PyObject* value, void* closure) { \
+    self->cpu->regs.name = (uint16_t)PyLong_AsLong(value); \
+    return 0; \
+}
+
+REG16_GETTER(PC)
+REG16_GETTER(SP)
+REG16_GETTER(IX)
+REG16_GETTER(IY)
+REG16_GETTER(MEMPTR)
+
+// Compound 16-bit registers
+static PyObject* Regs_get_BC(RegsObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.BC());
+}
+static int Regs_set_BC(RegsObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_BC((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+static PyObject* Regs_get_DE(RegsObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.DE());
+}
+static int Regs_set_DE(RegsObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_DE((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+static PyObject* Regs_get_HL(RegsObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.HL());
+}
+static int Regs_set_HL(RegsObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_HL((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+static PyObject* Regs_get_AF(RegsObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.AF());
+}
+static int Regs_set_AF(RegsObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_AF((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+// Boolean flags
+#define FLAG_GETTER(name) \
+static PyObject* Regs_get_##name(RegsObject* self, void* closure) { \
+    return PyBool_FromLong(self->cpu->regs.name); \
+} \
+static int Regs_set_##name(RegsObject* self, PyObject* value, void* closure) { \
+    self->cpu->regs.name = PyObject_IsTrue(value); \
+    return 0; \
+}
+
+FLAG_GETTER(IFF1)
+FLAG_GETTER(IFF2)
+FLAG_GETTER(EI_PENDING)
+FLAG_GETTER(EI_JUST_RESOLVED)
+FLAG_GETTER(UNRESOLVED_PREFIX)
+
+// IM (0-2)
+static PyObject* Regs_get_IM(RegsObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.IM);
+}
+static int Regs_set_IM(RegsObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.IM = (uint8_t)PyLong_AsLong(value);
+    return 0;
+}
+
+static PyGetSetDef Regs_getsetters[] = {
+    {"A", (getter)Regs_get_A, (setter)Regs_set_A, NULL, NULL},
+    {"F", (getter)Regs_get_F, (setter)Regs_set_F, NULL, NULL},
+    {"B", (getter)Regs_get_B, (setter)Regs_set_B, NULL, NULL},
+    {"C", (getter)Regs_get_C, (setter)Regs_set_C, NULL, NULL},
+    {"D", (getter)Regs_get_D, (setter)Regs_set_D, NULL, NULL},
+    {"E", (getter)Regs_get_E, (setter)Regs_set_E, NULL, NULL},
+    {"H", (getter)Regs_get_H, (setter)Regs_set_H, NULL, NULL},
+    {"L", (getter)Regs_get_L, (setter)Regs_set_L, NULL, NULL},
+    {"Ap", (getter)Regs_get_Ap, (setter)Regs_set_Ap, NULL, NULL},
+    {"Fp", (getter)Regs_get_Fp, (setter)Regs_set_Fp, NULL, NULL},
+    {"Bp", (getter)Regs_get_Bp, (setter)Regs_set_Bp, NULL, NULL},
+    {"Cp", (getter)Regs_get_Cp, (setter)Regs_set_Cp, NULL, NULL},
+    {"Dp", (getter)Regs_get_Dp, (setter)Regs_set_Dp, NULL, NULL},
+    {"Ep", (getter)Regs_get_Ep, (setter)Regs_set_Ep, NULL, NULL},
+    {"Hp", (getter)Regs_get_Hp, (setter)Regs_set_Hp, NULL, NULL},
+    {"Lp", (getter)Regs_get_Lp, (setter)Regs_set_Lp, NULL, NULL},
+    {"I", (getter)Regs_get_I, (setter)Regs_set_I, NULL, NULL},
+    {"R", (getter)Regs_get_R, (setter)Regs_set_R, NULL, NULL},
+    {"Q", (getter)Regs_get_Q, (setter)Regs_set_Q, NULL, NULL},
+    {"LAST_Q", (getter)Regs_get_LAST_Q, (setter)Regs_set_LAST_Q, NULL, NULL},
+    {"PC", (getter)Regs_get_PC, (setter)Regs_set_PC, NULL, NULL},
+    {"SP", (getter)Regs_get_SP, (setter)Regs_set_SP, NULL, NULL},
+    {"IX", (getter)Regs_get_IX, (setter)Regs_set_IX, NULL, NULL},
+    {"IY", (getter)Regs_get_IY, (setter)Regs_set_IY, NULL, NULL},
+    {"MEMPTR", (getter)Regs_get_MEMPTR, (setter)Regs_set_MEMPTR, NULL, NULL},
+    {"BC", (getter)Regs_get_BC, (setter)Regs_set_BC, NULL, NULL},
+    {"DE", (getter)Regs_get_DE, (setter)Regs_set_DE, NULL, NULL},
+    {"HL", (getter)Regs_get_HL, (setter)Regs_set_HL, NULL, NULL},
+    {"AF", (getter)Regs_get_AF, (setter)Regs_set_AF, NULL, NULL},
+    {"IFF1", (getter)Regs_get_IFF1, (setter)Regs_set_IFF1, NULL, NULL},
+    {"IFF2", (getter)Regs_get_IFF2, (setter)Regs_set_IFF2, NULL, NULL},
+    {"EI_PENDING", (getter)Regs_get_EI_PENDING, (setter)Regs_set_EI_PENDING, NULL, NULL},
+    {"EI_JUST_RESOLVED", (getter)Regs_get_EI_JUST_RESOLVED, (setter)Regs_set_EI_JUST_RESOLVED, NULL, NULL},
+    {"UNRESOLVED_PREFIX", (getter)Regs_get_UNRESOLVED_PREFIX, (setter)Regs_set_UNRESOLVED_PREFIX, NULL, NULL},
+    {"IM", (getter)Regs_get_IM, (setter)Regs_set_IM, NULL, NULL},
+    {NULL}
 };
 
-NB_MODULE(_pyz80, m) {
-    m.attr("FLAG_S")  = (int)z80flags::FLAG_S;
-    m.attr("FLAG_Z")  = (int)z80flags::FLAG_Z;
-    m.attr("FLAG_F5") = (int)z80flags::FLAG_F5;
-    m.attr("FLAG_H")  = (int)z80flags::FLAG_H;
-    m.attr("FLAG_F3") = (int)z80flags::FLAG_F3;
-    m.attr("FLAG_PV") = (int)z80flags::FLAG_PV;
-    m.attr("FLAG_N")  = (int)z80flags::FLAG_N;
-    m.attr("FLAG_C")  = (int)z80flags::FLAG_C;
+static PyTypeObject RegsType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "_pyz80.Regs",
+    sizeof(RegsObject),
+    0,
+    (destructor)Regs_dealloc,
+    0,                          /* tp_print */
+    0,                          /* tp_getattr */
+    0,                          /* tp_setattr */
+    0,                          /* tp_reserved */
+    0,                          /* tp_repr */
+    0,                          /* tp_as_number */
+    0,                          /* tp_as_sequence */
+    0,                          /* tp_as_mapping */
+    0,                          /* tp_hash  */
+    0,                          /* tp_call */
+    0,                          /* tp_str */
+    0,                          /* tp_getattro */
+    0,                          /* tp_setattro */
+    0,                          /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT,         /* tp_flags */
+    "Z80 Registers",            /* tp_doc */
+    0,                          /* tp_traverse */
+    0,                          /* tp_clear */
+    0,                          /* tp_richcompare */
+    0,                          /* tp_weaklistoffset */
+    0,                          /* tp_iter */
+    0,                          /* tp_iternext */
+    0,                          /* tp_methods */
+    0,                          /* tp_members */
+    Regs_getsetters,            /* tp_getset */
+};
 
-    z80flags::init_tables();
-    build_handler_tables();
+static PyObject* Regs_new(CPU* cpu) {
+    RegsObject* self = PyObject_New(RegsObject, &RegsType);
+    if (self) self->cpu = cpu;
+    return (PyObject*)self;
+}
 
-    m.attr("PARITY_TABLE") = make_bytes_view(z80flags::PARITY_TABLE, 256);
-    m.attr("SZ_TABLE") = make_bytes_view(z80flags::SZ_TABLE, 256);
-    m.attr("SZ53_TABLE") = make_bytes_view(z80flags::SZ53_TABLE, 256);
-    m.attr("SZP_TABLE") = make_bytes_view(z80flags::SZP_TABLE, 256);
-    m.attr("SZ53P_TABLE") = make_bytes_view(z80flags::SZ53P_TABLE, 256);
-    m.attr("SZHZP_TABLE") = make_bytes_view(z80flags::SZHZP_TABLE, 256);
-    m.attr("ADD_FLAGS") = make_bytes_view(z80flags::ADD_FLAGS, 65536);
-    m.attr("ADC_FLAGS") = make_bytes_view(z80flags::ADC_FLAGS, 65536);
-    m.attr("SUB_FLAGS") = make_bytes_view(z80flags::SUB_FLAGS, 65536);
-    m.attr("SBC_FLAGS") = make_bytes_view(z80flags::SBC_FLAGS, 65536);
-    m.attr("INC_FLAGS") = make_bytes_view(z80flags::INC_FLAGS, 256);
-    m.attr("DEC_FLAGS") = make_bytes_view(z80flags::DEC_FLAGS, 256);
+// ── Z80CPU type ─────────────────────────────────────────────────────
+static void Z80CPU_dealloc(Z80CPUObject* self) {
+    if (self->cpu) delete self->cpu;
+    if (self->py_bus) delete self->py_bus;
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
 
-    nb::class_<Registers>(m, "Registers")
-        .def(nb::init<>())
-        .def_rw("A", &Registers::A)
-        .def_rw("F", &Registers::F)
-        .def_rw("B", &Registers::B)
-        .def_rw("C", &Registers::C)
-        .def_rw("D", &Registers::D)
-        .def_rw("E", &Registers::E)
-        .def_rw("H", &Registers::H)
-        .def_rw("L", &Registers::L)
-        .def_rw("Ap", &Registers::Ap)
-        .def_rw("Fp", &Registers::Fp)
-        .def_rw("Bp", &Registers::Bp)
-        .def_rw("Cp", &Registers::Cp)
-        .def_rw("Dp", &Registers::Dp)
-        .def_rw("Ep", &Registers::Ep)
-        .def_rw("Hp", &Registers::Hp)
-        .def_rw("Lp", &Registers::Lp)
-        .def_rw("IX", &Registers::IX)
-        .def_rw("IY", &Registers::IY)
-        .def_rw("SP", &Registers::SP)
-        .def_rw("PC", &Registers::PC)
-        .def_rw("I", &Registers::I)
-        .def_rw("R", &Registers::R)
-        .def_rw("IFF1", &Registers::IFF1)
-        .def_rw("IFF2", &Registers::IFF2)
-        .def_rw("IM", &Registers::IM)
-        .def_rw("Memptr", &Registers::MEMPTR)
-        .def_rw("Q", &Registers::Q)
-        .def_rw("last_Q", &Registers::LAST_Q)
-        .def_prop_rw("BC", &Registers::BC, &Registers::set_BC)
-        .def_prop_rw("DE", &Registers::DE, &Registers::set_DE)
-        .def_prop_rw("HL", &Registers::HL, &Registers::set_HL)
-        .def_prop_rw("AF", &Registers::AF, &Registers::set_AF)
-        .def_prop_rw("IXh", &Registers::IXh, &Registers::set_IXh)
-        .def_prop_rw("IXl", &Registers::IXl, &Registers::set_IXl)
-        .def_prop_rw("IYh", &Registers::IYh, &Registers::set_IYh)
-        .def_prop_rw("IYl", &Registers::IYl, &Registers::set_IYl)
-        .def("swap_shadow", &Registers::swap_shadow)
-        .def("swap_shadow_all", &Registers::swap_shadow_all)
-        .def("reset", &Registers::reset);
+static int Z80CPU_init(Z80CPUObject* self, PyObject* args, PyObject* kwds) {
+    PyObject* py_bus_obj = nullptr;
+    if (!PyArg_ParseTuple(args, "|O", &py_bus_obj)) return -1;
 
-    nb::class_<Bus>(m, "Bus");
+    self->py_bus = nullptr;
 
-    // IOPorts wrapper for SimpleBus
-    nb::class_<SimpleBus::IOPorts>(m, "IOPorts")
-        .def("__getitem__", &SimpleBus::IOPorts::get)
-        .def("__setitem__", &SimpleBus::IOPorts::set);
+    if (py_bus_obj && py_bus_obj != Py_None) {
+        self->py_bus = new PythonBus(py_bus_obj);
+        self->cpu = new CPU(self->py_bus);
+    } else {
+        // Create a PythonBus with None as the object — this allows
+        // I/O callbacks to be set without requiring a full bus object
+        self->py_bus = new PythonBus(Py_None);
+        self->cpu = new CPU(self->py_bus);
+        // Enable fast path using PythonBus's internal memory
+        self->cpu->_mem = self->py_bus->memory;
+        self->cpu->_is_simple_bus = true;
+    }
+    return 0;
+}
 
-    nb::class_<SimpleBus, Bus>(m, "SimpleBus")
-        .def(nb::init<>())
-        .def("bus_read", &SimpleBus::bus_read)
-        .def("bus_write", &SimpleBus::bus_write)
-        .def("bus_io_read", &SimpleBus::bus_io_read)
-        .def("bus_io_write", &SimpleBus::bus_io_write)
-        .def("__getitem__", [](SimpleBus& self, uint16_t addr) {
-            return self.memory[addr & 0xFFFF];
-        })
-        .def("__setitem__", [](SimpleBus& self, uint16_t addr, uint8_t val) {
-            self.memory[addr & 0xFFFF] = val;
-        })
-        .def_prop_ro("io_ports", &SimpleBus::get_io_ports, nb::rv_policy::reference_internal);
+static PyObject* Z80CPU_step(Z80CPUObject* self) {
+    return PyLong_FromLong(self->cpu->step());
+}
 
-    // PythonCallbackBus: wraps Python callables as a C++ Bus
-    nb::class_<PythonCallbackBus, Bus>(m, "CallbackBus")
-        .def(nb::init<nb::object, nb::object, nb::object, nb::object>(),
-             nb::arg("bus_read"), nb::arg("bus_write"),
-             nb::arg("bus_io_read"), nb::arg("bus_io_write"))
-        .def("bus_read", &PythonCallbackBus::bus_read)
-        .def("bus_write", &PythonCallbackBus::bus_write)
-        .def("bus_io_read", &PythonCallbackBus::bus_io_read)
-        .def("bus_io_write", &PythonCallbackBus::bus_io_write);
+static PyObject* Z80CPU_run_frame(Z80CPUObject* self, PyObject* args) {
+    int t_states;
+    if (!PyArg_ParseTuple(args, "i", &t_states)) return nullptr;
+    return PyLong_FromLong(self->cpu->run_frame(t_states));
+}
 
-    nb::class_<CPUWrapper>(m, "Z80CPU")
-        .def(nb::init<>())
-        .def(nb::init<nb::object>(), nb::keep_alive<1, 2>())
-        .def("step", &CPUWrapper::step)
-        .def("run", &CPUWrapper::run)
-        .def("run_instructions", &CPUWrapper::run_instructions)
-        .def("reset", &CPUWrapper::reset)
-        .def("trigger_interrupt", &CPUWrapper::trigger_interrupt, nb::arg("data") = 0xFF)
-        .def("trigger_nmi", &CPUWrapper::trigger_nmi)
-        .def("read_byte", &CPUWrapper::read_byte)
-        .def("write_byte", &CPUWrapper::write_byte)
-        .def("io_read", &CPUWrapper::io_read)
-        .def("io_write", &CPUWrapper::io_write)
-        .def_prop_ro("regs", &CPUWrapper::get_regs)
-        .def_prop_ro("bus", &CPUWrapper::get_bus)
-        .def_prop_rw("cycles",
-            [](CPUWrapper& self) -> int { return self._cpu.cycles; },
-            [](CPUWrapper& self, int v) { self._cpu.cycles = v; })
-        .def_prop_ro("halted", [](CPUWrapper& self) -> bool { return self._cpu.halted; })
-        .def_prop_ro("instruction_count", [](CPUWrapper& self) -> int { return self._cpu.instruction_count; })
-        .def_prop_ro("interrupt_pending", [](CPUWrapper& self) -> bool { return self._cpu.interrupt_pending; })
-        .def_prop_ro("interrupt_data", [](CPUWrapper& self) -> uint8_t { return self._cpu.interrupt_data; })
-        .def("invalidate_range", &CPUWrapper::invalidate_range)
-        .def("invalidate_cache", &CPUWrapper::invalidate_cache)
-        .def("invalidate_all", &CPUWrapper::invalidate_all)
-        .def_prop_ro("nmi_pending", [](CPUWrapper& self) -> bool { return self._cpu.nmi_pending; });
+static PyObject* Z80CPU_add_cycles(Z80CPUObject* self, PyObject* args) {
+    int count;
+    if (!PyArg_ParseTuple(args, "i", &count)) return nullptr;
+    self->cpu->add_cycles(count);
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_set_on_input_callback(Z80CPUObject* self, PyObject* args) {
+    PyObject* cb;
+    if (!PyArg_ParseTuple(args, "O", &cb)) return nullptr;
+    if (self->py_bus) {
+        Py_XDECREF(self->py_bus->input_cb);
+        Py_INCREF(cb);
+        self->py_bus->input_cb = cb;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_set_on_output_callback(Z80CPUObject* self, PyObject* args) {
+    PyObject* cb;
+    if (!PyArg_ParseTuple(args, "O", &cb)) return nullptr;
+    if (self->py_bus) {
+        Py_XDECREF(self->py_bus->output_cb);
+        Py_INCREF(cb);
+        self->py_bus->output_cb = cb;
+    }
+    Py_RETURN_NONE;
+}
+
+// Memory View
+static PyObject* Z80CPU_get_memory_view(Z80CPUObject* self) {
+    if (!self->cpu->_mem) {
+        PyErr_SetString(PyExc_RuntimeError, "No direct memory available (not using SimpleBus)");
+        return NULL;
+    }
+    return PyMemoryView_FromMemory(reinterpret_cast<char*>(self->cpu->_mem), 65536, PyBUF_WRITE);
+}
+
+// CPU methods
+static PyObject* Z80CPU_reset(Z80CPUObject* self) {
+    self->cpu->reset();
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_read_byte(Z80CPUObject* self, PyObject* args) {
+    unsigned int addr;
+    if (!PyArg_ParseTuple(args, "I", &addr)) return nullptr;
+    return PyLong_FromLong(self->cpu->_bus_read((uint16_t)addr, self->cpu->cycles));
+}
+
+static PyObject* Z80CPU_write_byte(Z80CPUObject* self, PyObject* args) {
+    unsigned int addr, value;
+    if (!PyArg_ParseTuple(args, "II", &addr, &value)) return nullptr;
+    self->cpu->_bus_write((uint16_t)addr, (uint8_t)value, self->cpu->cycles);
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_trigger_nmi(Z80CPUObject* self) {
+    self->cpu->trigger_nmi();
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_trigger_interrupt(Z80CPUObject* self, PyObject* args) {
+    unsigned int data;
+    if (!PyArg_ParseTuple(args, "I", &data)) return nullptr;
+    self->cpu->trigger_interrupt((uint8_t)data);
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_invalidate_range(Z80CPUObject* self, PyObject* args) {
+    unsigned int start, end;
+    if (!PyArg_ParseTuple(args, "II", &start, &end)) return nullptr;
+    // C++ decoder doesn't have invalidate_range yet, but we can call decoder method
+    // For now, just return - the C++ decoder handles this internally
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_invalidate_all(Z80CPUObject* self) {
+    self->cpu->decoder.invalidate_all();
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_run(Z80CPUObject* self, PyObject* args) {
+    int max_cycles;
+    if (!PyArg_ParseTuple(args, "i", &max_cycles)) return nullptr;
+    return PyLong_FromLong(self->cpu->run(max_cycles));
+}
+
+static PyObject* Z80CPU_run_instructions(Z80CPUObject* self, PyObject* args) {
+    int count;
+    if (!PyArg_ParseTuple(args, "i", &count)) return nullptr;
+    return PyLong_FromLong(self->cpu->run_instructions(count));
+}
+
+static PyObject* Z80CPU_io_read(Z80CPUObject* self, PyObject* args) {
+    unsigned int port;
+    if (!PyArg_ParseTuple(args, "I", &port)) return nullptr;
+    return PyLong_FromLong(self->cpu->_bus_io_read((uint16_t)port, self->cpu->cycles));
+}
+
+static PyObject* Z80CPU_io_write(Z80CPUObject* self, PyObject* args) {
+    unsigned int port, value;
+    if (!PyArg_ParseTuple(args, "II", &port, &value)) return nullptr;
+    self->cpu->_bus_io_write((uint16_t)port, (uint8_t)value, self->cpu->cycles);
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_get_current_opcode(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->current_opcode);
+}
+
+static PyObject* Z80CPU_get_regs(Z80CPUObject* self, void* closure) {
+    return Regs_new(self->cpu);
+}
+
+// Direct register accessors on CPU object (machine-agnostic flat API)
+#define CPU_REG8_GETSET(name, type) \
+static PyObject* Z80CPU_get_##name(Z80CPUObject* self, void* closure) { \
+    return PyLong_FromLong(self->cpu->regs.name); \
+} \
+static int Z80CPU_set_##name(Z80CPUObject* self, PyObject* value, void* closure) { \
+    self->cpu->regs.name = (type)PyLong_AsLong(value); \
+    return 0; \
+}
+
+CPU_REG8_GETSET(A, uint8_t)
+CPU_REG8_GETSET(F, uint8_t)
+CPU_REG8_GETSET(B, uint8_t)
+CPU_REG8_GETSET(C, uint8_t)
+CPU_REG8_GETSET(D, uint8_t)
+CPU_REG8_GETSET(E, uint8_t)
+CPU_REG8_GETSET(H, uint8_t)
+CPU_REG8_GETSET(L, uint8_t)
+CPU_REG8_GETSET(Ap, uint8_t)
+CPU_REG8_GETSET(Fp, uint8_t)
+CPU_REG8_GETSET(Bp, uint8_t)
+CPU_REG8_GETSET(Cp, uint8_t)
+CPU_REG8_GETSET(Dp, uint8_t)
+CPU_REG8_GETSET(Ep, uint8_t)
+CPU_REG8_GETSET(Hp, uint8_t)
+CPU_REG8_GETSET(Lp, uint8_t)
+CPU_REG8_GETSET(I, uint8_t)
+CPU_REG8_GETSET(R, uint8_t)
+CPU_REG8_GETSET(Q, uint8_t)
+CPU_REG8_GETSET(LAST_Q, uint8_t)
+CPU_REG8_GETSET(PC, uint16_t)
+CPU_REG8_GETSET(SP, uint16_t)
+CPU_REG8_GETSET(IX, uint16_t)
+CPU_REG8_GETSET(IY, uint16_t)
+CPU_REG8_GETSET(MEMPTR, uint16_t)
+
+// Boolean flags on CPU
+static PyObject* Z80CPU_get_IFF1(Z80CPUObject* self, void* closure) {
+    return PyBool_FromLong(self->cpu->regs.IFF1);
+}
+static int Z80CPU_set_IFF1(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.IFF1 = PyObject_IsTrue(value);
+    return 0;
+}
+
+static PyObject* Z80CPU_get_IFF2(Z80CPUObject* self, void* closure) {
+    return PyBool_FromLong(self->cpu->regs.IFF2);
+}
+static int Z80CPU_set_IFF2(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.IFF2 = PyObject_IsTrue(value);
+    return 0;
+}
+
+static PyObject* Z80CPU_get_IM(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.IM);
+}
+static int Z80CPU_set_IM(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.IM = (uint8_t)PyLong_AsLong(value);
+    return 0;
+}
+
+// Compound 16-bit registers
+static PyObject* Z80CPU_get_BC(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.BC());
+}
+static int Z80CPU_set_BC(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_BC((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+static PyObject* Z80CPU_get_DE(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.DE());
+}
+static int Z80CPU_set_DE(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_DE((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+static PyObject* Z80CPU_get_HL(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.HL());
+}
+static int Z80CPU_set_HL(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_HL((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+static PyObject* Z80CPU_get_AF(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->regs.AF());
+}
+static int Z80CPU_set_AF(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->regs.set_AF((uint16_t)PyLong_AsLong(value));
+    return 0;
+}
+
+// cycles attribute
+static PyObject* Z80CPU_get_cycles(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->cycles);
+}
+static int Z80CPU_set_cycles(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->cycles = (int)PyLong_AsLong(value);
+    return 0;
+}
+
+// halted attribute
+static PyObject* Z80CPU_get_halted(Z80CPUObject* self, void* closure) {
+    return PyBool_FromLong(self->cpu->halted);
+}
+static int Z80CPU_set_halted(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->halted = PyObject_IsTrue(value);
+    return 0;
+}
+
+// interrupt_pending attribute
+static PyObject* Z80CPU_get_interrupt_pending(Z80CPUObject* self, void* closure) {
+    return PyBool_FromLong(self->cpu->interrupt_pending);
+}
+static int Z80CPU_set_interrupt_pending(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->interrupt_pending = PyObject_IsTrue(value);
+    return 0;
+}
+
+// nmi_pending attribute
+static PyObject* Z80CPU_get_nmi_pending(Z80CPUObject* self, void* closure) {
+    return PyBool_FromLong(self->cpu->nmi_pending);
+}
+static int Z80CPU_set_nmi_pending(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->nmi_pending = PyObject_IsTrue(value);
+    return 0;
+}
+
+// interrupt_data attribute
+static PyObject* Z80CPU_get_interrupt_data(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->interrupt_data);
+}
+static int Z80CPU_set_interrupt_data(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->interrupt_data = (uint8_t)PyLong_AsLong(value);
+    return 0;
+}
+
+// instruction_count attribute
+static PyObject* Z80CPU_get_instruction_count(Z80CPUObject* self, void* closure) {
+    return PyLong_FromLong(self->cpu->instruction_count);
+}
+static int Z80CPU_set_instruction_count(Z80CPUObject* self, PyObject* value, void* closure) {
+    self->cpu->instruction_count = (int)PyLong_AsLong(value);
+    return 0;
+}
+
+static PyGetSetDef Z80CPU_getsetters[] = {
+    // 8-bit registers
+    {"A", (getter)Z80CPU_get_A, (setter)Z80CPU_set_A, "Accumulator", NULL},
+    {"F", (getter)Z80CPU_get_F, (setter)Z80CPU_set_F, "Flags", NULL},
+    {"B", (getter)Z80CPU_get_B, (setter)Z80CPU_set_B, NULL, NULL},
+    {"C", (getter)Z80CPU_get_C, (setter)Z80CPU_set_C, NULL, NULL},
+    {"D", (getter)Z80CPU_get_D, (setter)Z80CPU_set_D, NULL, NULL},
+    {"E", (getter)Z80CPU_get_E, (setter)Z80CPU_set_E, NULL, NULL},
+    {"H", (getter)Z80CPU_get_H, (setter)Z80CPU_set_H, NULL, NULL},
+    {"L", (getter)Z80CPU_get_L, (setter)Z80CPU_set_L, NULL, NULL},
+    {"Ap", (getter)Z80CPU_get_Ap, (setter)Z80CPU_set_Ap, NULL, NULL},
+    {"Fp", (getter)Z80CPU_get_Fp, (setter)Z80CPU_set_Fp, NULL, NULL},
+    {"Bp", (getter)Z80CPU_get_Bp, (setter)Z80CPU_set_Bp, NULL, NULL},
+    {"Cp", (getter)Z80CPU_get_Cp, (setter)Z80CPU_set_Cp, NULL, NULL},
+    {"Dp", (getter)Z80CPU_get_Dp, (setter)Z80CPU_set_Dp, NULL, NULL},
+    {"Ep", (getter)Z80CPU_get_Ep, (setter)Z80CPU_set_Ep, NULL, NULL},
+    {"Hp", (getter)Z80CPU_get_Hp, (setter)Z80CPU_set_Hp, NULL, NULL},
+    {"Lp", (getter)Z80CPU_get_Lp, (setter)Z80CPU_set_Lp, NULL, NULL},
+    {"I", (getter)Z80CPU_get_I, (setter)Z80CPU_set_I, NULL, NULL},
+    {"R", (getter)Z80CPU_get_R, (setter)Z80CPU_set_R, NULL, NULL},
+    {"Q", (getter)Z80CPU_get_Q, (setter)Z80CPU_set_Q, NULL, NULL},
+    {"LAST_Q", (getter)Z80CPU_get_LAST_Q, (setter)Z80CPU_set_LAST_Q, NULL, NULL},
+    // 16-bit registers
+    {"PC", (getter)Z80CPU_get_PC, (setter)Z80CPU_set_PC, "Program counter", NULL},
+    {"SP", (getter)Z80CPU_get_SP, (setter)Z80CPU_set_SP, "Stack pointer", NULL},
+    {"IX", (getter)Z80CPU_get_IX, (setter)Z80CPU_set_IX, "Index register X", NULL},
+    {"IY", (getter)Z80CPU_get_IY, (setter)Z80CPU_set_IY, "Index register Y", NULL},
+    {"MEMPTR", (getter)Z80CPU_get_MEMPTR, (setter)Z80CPU_set_MEMPTR, NULL, NULL},
+    // Boolean flags
+    {"IFF1", (getter)Z80CPU_get_IFF1, (setter)Z80CPU_set_IFF1, NULL, NULL},
+    {"IFF2", (getter)Z80CPU_get_IFF2, (setter)Z80CPU_set_IFF2, NULL, NULL},
+    {"IM", (getter)Z80CPU_get_IM, (setter)Z80CPU_set_IM, NULL, NULL},
+    // Compound 16-bit registers
+    {"BC", (getter)Z80CPU_get_BC, (setter)Z80CPU_set_BC, NULL, NULL},
+    {"DE", (getter)Z80CPU_get_DE, (setter)Z80CPU_set_DE, NULL, NULL},
+    {"HL", (getter)Z80CPU_get_HL, (setter)Z80CPU_set_HL, NULL, NULL},
+    {"AF", (getter)Z80CPU_get_AF, (setter)Z80CPU_set_AF, NULL, NULL},
+    // CPU state
+    {"regs", (getter)Z80CPU_get_regs, NULL, "Register file", NULL},
+    {"cycles", (getter)Z80CPU_get_cycles, (setter)Z80CPU_set_cycles, "T-state counter", NULL},
+    {"halted", (getter)Z80CPU_get_halted, (setter)Z80CPU_set_halted, "Halt state", NULL},
+    {"interrupt_pending", (getter)Z80CPU_get_interrupt_pending, (setter)Z80CPU_set_interrupt_pending, "Interrupt pending flag", NULL},
+    {"nmi_pending", (getter)Z80CPU_get_nmi_pending, (setter)Z80CPU_set_nmi_pending, "NMI pending flag", NULL},
+    {"interrupt_data", (getter)Z80CPU_get_interrupt_data, (setter)Z80CPU_set_interrupt_data, "Interrupt data bus value", NULL},
+    {"instruction_count", (getter)Z80CPU_get_instruction_count, (setter)Z80CPU_set_instruction_count, "Instruction counter", NULL},
+    {"current_opcode", (getter)Z80CPU_get_current_opcode, NULL, "Last executed opcode byte", NULL},
+    {NULL}
+};
+
+static PyMethodDef Z80CPU_methods[] = {
+    {"step", (PyCFunction)Z80CPU_step, METH_NOARGS, "Execute one instruction"},
+    {"run_frame", (PyCFunction)Z80CPU_run_frame, METH_VARARGS, "Run a frame"},
+    {"add_cycles", (PyCFunction)Z80CPU_add_cycles, METH_VARARGS, "Add contention"},
+    {"set_on_input_callback", (PyCFunction)Z80CPU_set_on_input_callback, METH_VARARGS, "Set input CB"},
+    {"set_on_output_callback", (PyCFunction)Z80CPU_set_on_output_callback, METH_VARARGS, "Set output CB"},
+    {"_get_memory_view", (PyCFunction)Z80CPU_get_memory_view, METH_NOARGS, "Get memory"},
+    {"reset", (PyCFunction)Z80CPU_reset, METH_NOARGS, "Reset CPU"},
+    {"read_byte", (PyCFunction)Z80CPU_read_byte, METH_VARARGS, "Read byte from memory"},
+    {"write_byte", (PyCFunction)Z80CPU_write_byte, METH_VARARGS, "Write byte to memory"},
+    {"trigger_nmi", (PyCFunction)Z80CPU_trigger_nmi, METH_NOARGS, "Trigger NMI"},
+    {"trigger_interrupt", (PyCFunction)Z80CPU_trigger_interrupt, METH_VARARGS, "Trigger interrupt"},
+    {"invalidate_range", (PyCFunction)Z80CPU_invalidate_range, METH_VARARGS, "Invalidate decoder cache range"},
+    {"invalidate_all", (PyCFunction)Z80CPU_invalidate_all, METH_NOARGS, "Invalidate all decoder cache"},
+    {"run", (PyCFunction)Z80CPU_run, METH_VARARGS, "Run for max T-states"},
+    {"run_instructions", (PyCFunction)Z80CPU_run_instructions, METH_VARARGS, "Run N instructions"},
+    {"io_read", (PyCFunction)Z80CPU_io_read, METH_VARARGS, "Read I/O port"},
+    {"io_write", (PyCFunction)Z80CPU_io_write, METH_VARARGS, "Write I/O port"},
+    {NULL}
+};
+
+static PyTypeObject Z80CPUType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "_pyz80.Z80CPU",            /* tp_name */
+    sizeof(Z80CPUObject),       /* tp_basicsize */
+    0,                          /* tp_itemsize */
+    (destructor)Z80CPU_dealloc, /* tp_dealloc */
+    0,                          /* tp_print */
+    0,                          /* tp_getattr */
+    0,                          /* tp_setattr */
+    0,                          /* tp_reserved */
+    0,                          /* tp_repr */
+    0,                          /* tp_as_number */
+    0,                          /* tp_as_sequence */
+    0,                          /* tp_as_mapping */
+    0,                          /* tp_hash  */
+    0,                          /* tp_call */
+    0,                          /* tp_str */
+    0,                          /* tp_getattro */
+    0,                          /* tp_setattro */
+    0,                          /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT,         /* tp_flags */
+    "Z80 CPU object",           /* tp_doc */
+    0,                          /* tp_traverse */
+    0,                          /* tp_clear */
+    0,                          /* tp_richcompare */
+    0,                          /* tp_weaklistoffset */
+    0,                          /* tp_iter */
+    0,                          /* tp_iternext */
+    Z80CPU_methods,             /* tp_methods */
+    0,                          /* tp_members */
+    Z80CPU_getsetters,          /* tp_getset */
+    0,                          /* tp_base */
+    0,                          /* tp_dict */
+    0,                          /* tp_descr_get */
+    0,                          /* tp_descr_set */
+    0,                          /* tp_dictoffset */
+    (initproc)Z80CPU_init,      /* tp_init */
+    0,                          /* tp_alloc */
+    PyType_GenericNew,          /* tp_new */
+};
+
+static struct PyModuleDef pyz80module = {
+    PyModuleDef_HEAD_INIT,
+    "_pyz80",
+    NULL,
+    -1,
+    NULL,
+};
+
+PyMODINIT_FUNC PyInit__pyz80(void) {
+    PyObject* m;
+    if (PyType_Ready(&RegsType) < 0) return NULL;
+    if (PyType_Ready(&Z80CPUType) < 0) return NULL;
+    m = PyModule_Create(&pyz80module);
+    if (!m) return NULL;
+    Py_INCREF(&RegsType);
+    PyModule_AddObject(m, "Regs", (PyObject*)&RegsType);
+    Py_INCREF(&Z80CPUType);
+    PyModule_AddObject(m, "Z80CPU", (PyObject*)&Z80CPUType);
+
+    PyModule_AddIntConstant(m, "FLAG_S", 0x80);
+    PyModule_AddIntConstant(m, "FLAG_Z", 0x40);
+    PyModule_AddIntConstant(m, "FLAG_F5", 0x20);
+    PyModule_AddIntConstant(m, "FLAG_H", 0x10);
+    PyModule_AddIntConstant(m, "FLAG_F3", 0x08);
+    PyModule_AddIntConstant(m, "FLAG_PV", 0x04);
+    PyModule_AddIntConstant(m, "FLAG_N", 0x02);
+    PyModule_AddIntConstant(m, "FLAG_C", 0x01);
+
+    PyModule_AddIntConstant(m, "MACHINE_STATE_SIZE", 0);
+
+    return m;
 }
