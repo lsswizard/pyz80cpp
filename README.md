@@ -57,7 +57,7 @@ cp _pyz80.so ../core/_pyz80.cpython-314-x86_64-linux-gnu.so
 python3 -m pytest tests/ -v
 ```
 
-445 tests covering loads, ALU, flags, jumps, calls, stack, I/O, block ops, indexed, interrupts, timing, undocumented flags, DD/FD fallthrough, DDCB/FDCB, DAA, Q factor, edge cases, and integration.
+1259 tests covering loads, ALU, flags, jumps, calls, stack, I/O, block ops, indexed, interrupts, timing, undocumented flags, DD/FD fallthrough, DDCB/FDCB, DAA, Q factor, edge cases, and integration. Comprehensive timing verification for all 256 base opcodes plus CB, ED, DD, FD, and DDCB/FDCB prefixed instructions against official Zilog Z80 User Manual specifications.
 
 ## Machine Integration
 

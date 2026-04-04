@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] — 2026-04-04
+
+### Added
+
+- Comprehensive timing tests for all DD/FD prefixed instructions (IX/IY), including 16-bit loads, ALU, stack, indexed memory ops, IXH/IXL 8-bit ops, DDCB/FDCB rotates, bits, SET/RES
+- IY timing test suite (mirrors IX timing tests)
+- `CycleType` enum in bus interface (`M1`, `MEM_RD`, `MEM_WR`, `IO_RD`, `IO_WR`, `INT_ACK`) for cycle-accurate bus tracking
+- NMI handling in `step()` with proper HALT exit and return address (PC+1 past HALT)
+
+### Changed
+
+- **Handler architecture**: All instruction handlers changed from `int` return type to `void` with internal cycle accounting via `_bus_fetch()`, `_bus_read()`, `_bus_write()`, and `_wait()` — enables machine-independent cycle counting
+- **Bus interface**: `_bus_read`, `_bus_write`, `_bus_io_read`, `_bus_io_write` now use explicit `CycleType` parameter for bus callback differentiation
+- **`_bus_fetch()`**: New 4T M1 cycle helper that increments R register — used for opcode fetches
+- **DD/FD handlers**: All indexed instruction handlers now properly consume the opcode byte with `_bus_fetch()` (4T M1) and include correct internal wait states for every instruction variant
+- **DDCB/FDCB handlers**: Fixed byte order (CB prefix consumed before displacement) and proper timing for ROT (23T), BIT (20T), SET/RES (23T)
+- **HALT**: PC is decremented so interrupt return address is correctly PC+1 (past the HALT instruction)
+- **Test fixture**: CPU registers now initialize with F=0, A=0 for deterministic conditional instruction testing
+- **Timing tests**: Conditional instruction timing tests (JR Z, CALL C, RET NZ, etc.) now properly set flags via setup parameters
+
+### Fixed
+
+- **LD (IX+d),n**: 19T (was 15T — missing internal wait states)
+- **INC/DEC (IX+d)**: 23T (was 19T — missing internal wait states)
+- **LD SP,IX/IY**: 10T (was 8T — missing internal wait)
+- **JP (IX/IY)**: 8T (was 4T — missing internal wait)
+- **INC/DEC IX/IY**: 10T (was 6T — missing internal wait)
+- **PUSH IX/IY**: 15T (was 11T — missing internal wait)
+- **POP IX/IY**: 14T (was 10T — missing internal wait)
+- **EX (SP),IX/IY**: 23T (was 19T — missing internal wait)
+- **LD (nn),IX/IY**: 20T (was 16T — missing internal wait)
+- **LD IX/IY,(nn)**: 20T (was 16T — missing internal wait)
+- **INC/DEC IXH/IXL/IYH/IYL**: 8T (was 4T — missing internal wait)
+- **LD IXH/IXL,n**: 11T (was 7T — missing internal wait)
+- **LD r,IXH/IXL and LD IXH/IXL,r**: 8T (was 4T — missing internal wait)
+- **ALU A,IXH/IXL**: 8T (was 4T — missing internal wait)
+- **ALU A,(IX+d)**: 19T (was 15T — missing internal wait)
+- **LD IX,(nn)**: Fixed to read memory into IX instead of writing IX to memory
+- **DDCB SET/RES**: Fixed byte order and memory write operations
+- **NMI**: Was completely missing from `step()` — now properly handles NMI with 11T timing, IFF1 clear, and HALT exit
+
 ## [2.0.0] — 2026-04-03
 
 ### Breaking Changes

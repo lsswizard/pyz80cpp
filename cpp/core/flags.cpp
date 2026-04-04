@@ -141,7 +141,7 @@ static void build_alu() {
                 if (r8 == 0) f |= FLAG_Z;
                 if (((a & 0x0F) + (b & 0x0F)) & 0x10) f |= FLAG_H;
                 if (r > 0xFF) f |= FLAG_C;
-                if (((a ^ b) & 0x80) == 0 && ((r8 ^ a) & 0x80) != 0) f |= FLAG_PV;
+                if (PARITY_TABLE[r8]) f |= FLAG_PV;
                 ADD_FLAGS[idx] = f;
             }
             // ADC
@@ -152,7 +152,7 @@ static void build_alu() {
                 if (r8 == 0) f |= FLAG_Z;
                 if (((a & 0x0F) + (b & 0x0F) + 1) & 0x10) f |= FLAG_H;
                 if (r > 0xFF) f |= FLAG_C;
-                if (((a ^ b) & 0x80) == 0 && ((r8 ^ a) & 0x80) != 0) f |= FLAG_PV;
+                if (PARITY_TABLE[r8]) f |= FLAG_PV;
                 ADC_FLAGS[idx] = f;
             }
             // SUB
@@ -163,7 +163,7 @@ static void build_alu() {
                 if (r8 == 0) f |= FLAG_Z;
                 if ((a & 0x0F) < (b & 0x0F)) f |= FLAG_H;
                 if (r < 0) f |= FLAG_C;
-                if (((a ^ b) & 0x80) != 0 && ((r8 ^ a) & 0x80) != 0) f |= FLAG_PV;
+                if (PARITY_TABLE[r8]) f |= FLAG_PV;
                 SUB_FLAGS[idx] = f;
             }
             // SBC
@@ -174,7 +174,7 @@ static void build_alu() {
                 if (r8 == 0) f |= FLAG_Z;
                 if ((a & 0x0F) < ((b & 0x0F) + 1)) f |= FLAG_H;
                 if (r < 0) f |= FLAG_C;
-                if (((a ^ b) & 0x80) != 0 && ((r8 ^ a) & 0x80) != 0) f |= FLAG_PV;
+                if (PARITY_TABLE[r8]) f |= FLAG_PV;
                 SBC_FLAGS[idx] = f;
             }
         }

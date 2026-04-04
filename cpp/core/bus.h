@@ -3,11 +3,20 @@
 #include <cstdint>
 #include <cstring>
 
+enum class CycleType {
+    M1,
+    MEM_RD,
+    MEM_WR,
+    IO_RD,
+    IO_WR,
+    INT_ACK
+};
+
 class Bus {
 public:
     virtual ~Bus() = default;
-    virtual uint8_t bus_read(uint16_t addr, int t_state) = 0;
-    virtual void bus_write(uint16_t addr, uint8_t value, int t_state) = 0;
+    virtual uint8_t bus_read(uint16_t addr, int t_state, CycleType type) = 0;
+    virtual void bus_write(uint16_t addr, uint8_t value, int t_state, CycleType type) = 0;
     virtual uint8_t bus_io_read(uint16_t port, int t_state) = 0;
     virtual void bus_io_write(uint16_t port, uint8_t value, int t_state) = 0;
 };
@@ -15,7 +24,9 @@ public:
 class SimpleBus : public Bus {
 public:
     uint8_t memory[65536];
+    uint8_t addr_marks[65536];
     uint8_t io_ports[256];
+    uint16_t last_read_addr;
 
     // Helper class for Python access to io_ports
     class IOPorts {
@@ -30,8 +41,8 @@ public:
 
     SimpleBus();
 
-    uint8_t bus_read(uint16_t addr, int t_state) override;
-    void bus_write(uint16_t addr, uint8_t value, int t_state) override;
+    uint8_t bus_read(uint16_t addr, int t_state, CycleType type) override;
+    void bus_write(uint16_t addr, uint8_t value, int t_state, CycleType type) override;
     uint8_t bus_io_read(uint16_t port, int t_state) override;
     void bus_io_write(uint16_t port, uint8_t value, int t_state) override;
 

@@ -15,6 +15,7 @@ public:
     PyObject* get_int_vector_cb;
     uint8_t memory[65536];
     uint8_t addr_marks[65536];  // Memory marks for breakpoints/self-mod code
+    uint8_t io_ports[256];      // I/O port storage for standalone testing
     uint16_t last_read_addr;
 
     PythonBus(PyObject* obj) : py_obj(obj), input_cb(nullptr), output_cb(nullptr),
@@ -23,6 +24,7 @@ public:
         Py_INCREF(py_obj);
         std::memset(memory, 0xFF, sizeof(memory));
         std::memset(addr_marks, 0, sizeof(addr_marks));
+        std::memset(io_ports, 0, sizeof(io_ports));
     }
 
     ~PythonBus() override {
@@ -33,12 +35,12 @@ public:
         Py_XDECREF(get_int_vector_cb);
     }
 
-    uint8_t bus_read(uint16_t addr, int t_state) override {
+    uint8_t bus_read(uint16_t addr, int t_state, CycleType type) override {
         last_read_addr = addr;
         if (py_obj == Py_None) {
             return memory[addr & 0xFFFF];
         }
-        PyObject* result = PyObject_CallMethod(py_obj, "bus_read", "ii", addr, t_state);
+        PyObject* result = PyObject_CallMethod(py_obj, "bus_read", "iii", addr, t_state, (int)type);
         if (!result) {
             PyErr_Print();
             return 0xFF;
@@ -48,12 +50,12 @@ public:
         return val;
     }
 
-    void bus_write(uint16_t addr, uint8_t value, int t_state) override {
+    void bus_write(uint16_t addr, uint8_t value, int t_state, CycleType type) override {
         if (py_obj == Py_None) {
             memory[addr & 0xFFFF] = value;
             return;
         }
-        PyObject* result = PyObject_CallMethod(py_obj, "bus_write", "iIi", addr, value, t_state);
+        PyObject* result = PyObject_CallMethod(py_obj, "bus_write", "iIii", addr, value, t_state, (int)type);
         Py_XDECREF(result);
     }
 
@@ -69,7 +71,7 @@ public:
             return val;
         }
         if (py_obj == Py_None) {
-            return 0xFF;
+            return io_ports[port & 0xFF];
         }
         PyObject* result = PyObject_CallMethod(py_obj, "bus_io_read", "Ii", port, t_state);
         if (!result) {
@@ -87,6 +89,7 @@ public:
             return;
         }
         if (py_obj == Py_None) {
+            io_ports[port & 0xFF] = value;
             return;
         }
         PyObject* result = PyObject_CallMethod(py_obj, "bus_io_write", "IIi", port, value, t_state);
@@ -309,12 +312,11 @@ static int Z80CPU_init(Z80CPUObject* self, PyObject* args, PyObject* kwds) {
     if (py_bus_obj && py_bus_obj != Py_None) {
         self->py_bus = new PythonBus(py_bus_obj);
         self->cpu = new CPU(self->py_bus);
+        self->cpu->_mem = nullptr;
+        self->cpu->_is_simple_bus = false;
     } else {
-        // Create a PythonBus with None as the object — this allows
-        // I/O callbacks to be set without requiring a full bus object
         self->py_bus = new PythonBus(Py_None);
         self->cpu = new CPU(self->py_bus);
-        // Enable fast path using PythonBus's internal memory
         self->cpu->_mem = self->py_bus->memory;
         self->cpu->_is_simple_bus = true;
     }
@@ -431,13 +433,13 @@ static PyObject* Z80CPU_reset(Z80CPUObject* self) {
 static PyObject* Z80CPU_read_byte(Z80CPUObject* self, PyObject* args) {
     unsigned int addr;
     if (!PyArg_ParseTuple(args, "I", &addr)) return nullptr;
-    return PyLong_FromLong(self->cpu->_bus_read((uint16_t)addr, self->cpu->cycles));
+    return PyLong_FromLong(self->cpu->_bus_read((uint16_t)addr));
 }
 
 static PyObject* Z80CPU_write_byte(Z80CPUObject* self, PyObject* args) {
     unsigned int addr, value;
     if (!PyArg_ParseTuple(args, "II", &addr, &value)) return nullptr;
-    self->cpu->_bus_write((uint16_t)addr, (uint8_t)value, self->cpu->cycles);
+    self->cpu->_bus_write((uint16_t)addr, (uint8_t)value);
     Py_RETURN_NONE;
 }
 
@@ -456,8 +458,64 @@ static PyObject* Z80CPU_trigger_interrupt(Z80CPUObject* self, PyObject* args) {
 static PyObject* Z80CPU_invalidate_range(Z80CPUObject* self, PyObject* args) {
     unsigned int start, end;
     if (!PyArg_ParseTuple(args, "II", &start, &end)) return nullptr;
-    // C++ decoder doesn't have invalidate_range yet, but we can call decoder method
-    // For now, just return - the C++ decoder handles this internally
+    for (unsigned int addr = start; addr <= end && addr < 65536; ++addr) {
+        self->cpu->decoder.invalidate((uint16_t)addr);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_set_memory_ptr(Z80CPUObject* self, PyObject* args) {
+    PyObject* mv;
+    if (!PyArg_ParseTuple(args, "O", &mv)) return nullptr;
+    Py_buffer view;
+    if (PyObject_GetBuffer(mv, &view, PyBUF_WRITABLE) < 0) return nullptr;
+    if (view.len != 65536) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_ValueError, "Memory buffer must be exactly 65536 bytes");
+        return nullptr;
+    }
+    self->cpu->_mem = (uint8_t*)view.buf;
+    self->cpu->_is_simple_bus = true;
+    PyBuffer_Release(&view);
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_sync_memory(Z80CPUObject* self, PyObject* args) {
+    // Sync a region of machine memory into PythonBus memory
+    // Args: (offset, data_bytes)
+    Py_ssize_t offset;
+    PyObject* data;
+    if (!PyArg_ParseTuple(args, "nO", &offset, &data)) return nullptr;
+    if (!self->py_bus) {
+        PyErr_SetString(PyExc_RuntimeError, "No PythonBus available");
+        return nullptr;
+    }
+    Py_buffer view;
+    if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) < 0) return nullptr;
+    if (offset < 0 || offset + view.len > 65536) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_ValueError, "Memory region out of range");
+        return nullptr;
+    }
+    std::memcpy(self->py_bus->memory + offset, view.buf, view.len);
+    PyBuffer_Release(&view);
+    Py_RETURN_NONE;
+}
+
+static PyObject* Z80CPU_sync_memory_range(Z80CPUObject* self, PyObject* args) {
+    // Sync a single range: (offset, length, value)
+    Py_ssize_t offset, length;
+    int value;
+    if (!PyArg_ParseTuple(args, "nni", &offset, &length, &value)) return nullptr;
+    if (!self->py_bus) {
+        PyErr_SetString(PyExc_RuntimeError, "No PythonBus available");
+        return nullptr;
+    }
+    if (offset < 0 || offset + length > 65536) {
+        PyErr_SetString(PyExc_ValueError, "Memory region out of range");
+        return nullptr;
+    }
+    std::memset(self->py_bus->memory + offset, value & 0xFF, length);
     Py_RETURN_NONE;
 }
 
@@ -481,13 +539,13 @@ static PyObject* Z80CPU_run_instructions(Z80CPUObject* self, PyObject* args) {
 static PyObject* Z80CPU_io_read(Z80CPUObject* self, PyObject* args) {
     unsigned int port;
     if (!PyArg_ParseTuple(args, "I", &port)) return nullptr;
-    return PyLong_FromLong(self->cpu->_bus_io_read((uint16_t)port, self->cpu->cycles));
+    return PyLong_FromLong(self->cpu->_bus_io_read((uint16_t)port));
 }
 
 static PyObject* Z80CPU_io_write(Z80CPUObject* self, PyObject* args) {
     unsigned int port, value;
     if (!PyArg_ParseTuple(args, "II", &port, &value)) return nullptr;
-    self->cpu->_bus_io_write((uint16_t)port, (uint8_t)value, self->cpu->cycles);
+    self->cpu->_bus_io_write((uint16_t)port, (uint8_t)value);
     Py_RETURN_NONE;
 }
 
@@ -728,6 +786,9 @@ static PyMethodDef Z80CPU_methods[] = {
     {"mark_addrs", (PyCFunction)Z80CPU_mark_addrs, METH_VARARGS, "Mark memory addresses"},
     {"unmark_addrs", (PyCFunction)Z80CPU_unmark_addrs, METH_VARARGS, "Unmark memory addresses"},
     {"get_addr_mark", (PyCFunction)Z80CPU_get_addr_mark, METH_VARARGS, "Get address mark"},
+    {"sync_memory", (PyCFunction)Z80CPU_sync_memory, METH_VARARGS, "Sync machine memory into CPU memory"},
+    {"sync_memory_range", (PyCFunction)Z80CPU_sync_memory_range, METH_VARARGS, "Fill CPU memory range with value"},
+    {"set_memory_ptr", (PyCFunction)Z80CPU_set_memory_ptr, METH_VARARGS, "Point CPU memory at external buffer"},
     {NULL}
 };
 

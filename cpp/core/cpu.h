@@ -41,34 +41,58 @@ public:
     uint8_t read_reg8(int reg);
     void write_reg8(int reg, uint8_t value);
 
-    // Fast bus access
-    inline uint8_t _bus_read(uint16_t addr, int /*t_state*/) {
-        if (_is_simple_bus) return _mem[addr & 0xFFFF];
-        return bus->bus_read(addr, cycles);
+    // Cycle-accurate bus access
+    inline uint8_t _bus_fetch(uint16_t addr) {
+        // M1 cycle: 4 T-states
+        // R increments during M1 fetch
+        regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
+        uint8_t val;
+        if (_is_simple_bus) {
+            val = _mem[addr & 0xFFFF];
+        } else {
+            val = bus->bus_read(addr, cycles, CycleType::M1);
+        }
+        cycles += 4;
+        return val;
     }
 
-    inline void _bus_write(uint16_t addr, uint8_t value, int /*t_state*/) {
+    inline uint8_t _bus_read(uint16_t addr) {
+        // Memory Read cycle: 3 T-states
+        uint8_t val;
+        if (_is_simple_bus) {
+            val = _mem[addr & 0xFFFF];
+        } else {
+            val = bus->bus_read(addr, cycles, CycleType::MEM_RD);
+        }
+        cycles += 3;
+        return val;
+    }
+
+    inline void _bus_write(uint16_t addr, uint8_t value) {
+        // Memory Write cycle: 3 T-states
         if (_is_simple_bus) {
             _mem[addr & 0xFFFF] = value;
         } else {
-            bus->bus_write(addr, value, cycles);
+            bus->bus_write(addr, value, cycles, CycleType::MEM_WR);
         }
+        cycles += 3;
     }
 
-    inline void _bus_write_direct(uint16_t addr, uint8_t value, int /*t_state*/) {
-        if (_is_simple_bus) {
-            _mem[addr & 0xFFFF] = value;
-        } else {
-            bus->bus_write(addr, value, cycles);
-        }
+    inline uint8_t _bus_io_read(uint16_t port) {
+        // I/O Read cycle: 4 T-states
+        uint8_t val = bus->bus_io_read(port, cycles);
+        cycles += 4;
+        return val;
     }
 
-    inline uint8_t _bus_io_read(uint16_t port, int /*t_state*/) {
-        return bus->bus_io_read(port, cycles);
-    }
-
-    inline void _bus_io_write(uint16_t port, uint8_t value, int /*t_state*/) {
+    inline void _bus_io_write(uint16_t port, uint8_t value) {
+        // I/O Write cycle: 4 T-states
         bus->bus_io_write(port, value, cycles);
+        cycles += 4;
+    }
+
+    inline void _wait(int t_states) {
+        cycles += t_states;
     }
 
     inline bool check_condition(int cc) {

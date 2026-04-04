@@ -286,7 +286,16 @@ Self-modifying code requires calling `invalidate_all()` or `invalidate_range()` 
 
 ### Handler System
 
-Instructions are implemented as handler functions that take a `CPU&` reference and return T-states. Handlers are organized into tables:
+Instructions are implemented as handler functions that take a `CPU&` reference. Handlers are `void` — they manage their own cycle accounting internally using bus access helpers:
+
+- `_bus_fetch(addr)` — M1 opcode fetch cycle (4 T-states, increments R register)
+- `_bus_read(addr)` — Memory read cycle (3 T-states)
+- `_bus_write(addr, value)` — Memory write cycle (3 T-states)
+- `_bus_io_read(port)` — I/O read cycle (4 T-states)
+- `_bus_io_write(port, value)` — I/O write cycle (4 T-states)
+- `_wait(n)` — Internal processing delay (n T-states)
+
+Handlers are organized into tables:
 
 - `base_handlers[256]` — standard opcodes
 - `cb_handlers[256]` — CB-prefixed (bit operations, rotates, shifts)
@@ -294,6 +303,21 @@ Instructions are implemented as handler functions that take a `CPU&` reference a
 - `dd_handlers[256]` / `fd_handlers[256]` — DD/FD-prefixed (IX/IY)
 - `ddcb_handlers[256]` / `fdcb_handlers[256]` — DDCB/FDCB (indexed bit ops)
 - `dd_ed_handlers[256]` / `fd_ed_handlers[256]` — DD ED / FD ED prefixed
+
+### Cycle Types
+
+The bus interface uses a `CycleType` enum to distinguish bus cycle types, enabling machines to implement different behavior per cycle type (e.g., wait states, contention):
+
+```cpp
+enum class CycleType {
+    M1,       // Opcode fetch (4 T-states, R increment)
+    MEM_RD,   // Memory read (3 T-states)
+    MEM_WR,   // Memory write (3 T-states)
+    IO_RD,    // I/O read (4 T-states)
+    IO_WR,    // I/O write (4 T-states)
+    INT_ACK   // Interrupt acknowledge
+};
+```
 
 ### Fast Path
 
@@ -305,7 +329,7 @@ When using the default `PythonBus` (no custom bus object), `_is_simple_bus` is e
 python3 -m pytest tests/ -v
 ```
 
-445 tests covering:
+1259 tests covering:
 - 8-bit and 16-bit loads
 - All ALU operations (ADD, ADC, SUB, SBC, AND, OR, XOR, CP)
 - INC/DEC (8-bit and 16-bit)
@@ -317,13 +341,14 @@ python3 -m pytest tests/ -v
 - Exchange (EX, EXX)
 - Block operations (LDI, LDIR, CPI, INI, IND, OUTI, OUTD, INIR, OTIR)
 - I/O instructions (IN, OUT)
-- Interrupts (NMI, IM 0/1/2, DI, EI, REtn)
-- Indexed operations (IX, IY, DDCB, FDCB)
+- Interrupts (NMI, IM 0/1/2, DI, EI, RETN)
+- Indexed operations (IX, IY, DDCB, FDCB) — all variants with timing
 - ED instructions (LD I/R, RLD, RRD, NEG, IM)
 - HALT, NOP, SLL
 - DAA (BCD adjust)
-- Timing verification for every instruction
+- Comprehensive timing verification for all 256 base opcodes + CB, ED, DD, FD, DDCB/FDCB
 - Undocumented flags (F3, F5, Q factor)
 - DD/FD prefix fallthrough
+- IXH/IXL/IYH/IYL undocumented register transfers
 - Edge cases (wrap-around, overflow, R register)
 - Integration tests (memcpy, array sum, call/ret)

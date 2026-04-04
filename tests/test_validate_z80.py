@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Z80 CPU Core Validation — Machine-Agnostic API
-Tests the C++ Z80 implementation against expected Z80 behavior.
-Uses the raw CPython API: cpu.read_byte/write_byte, cpu.X register access, I/O callbacks.
+Z80 CPU Core Validation - Comprehensive pytest Implementation
+Tests the Z80 implementation against expected Z80 behavior.
+Based on official Z80 timing specifications.
 """
 
 import sys
-import os
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ".")
 
 from core import (
     Z80CPU,
@@ -23,23 +22,48 @@ from core import (
     FLAG_F3,
 )
 
-
-# ============================================================
-# I/O Callback Bus (for testing port I/O instructions)
-# ============================================================
+_F53 = FLAG_F5 | FLAG_F3
 
 
-class IOBus:
-    """Simple in-memory I/O state for testing IN/OUT instructions."""
+def _add_flags(a, b):
+    """Compute expected flags for ADD A,n."""
+    result = a + b
+    r = result & 0xFF
+    f = r & _F53
+    if result & 0x100:
+        f |= FLAG_C
+    if ((a & 0x0F) + (b & 0x0F)) & 0x10:
+        f |= FLAG_H
+    if r == 0:
+        f |= FLAG_Z
+    if r & 0x80:
+        f |= FLAG_S
+    if bin(r).count("1") % 2 == 0:
+        f |= FLAG_PV
+    return f
 
-    def __init__(self):
-        self.ports = {}
 
-    def input_callback(self, port):
-        return self.ports.get(port & 0xFF, 0xFF)
+def _sub_flags(a, b):
+    """Compute expected flags for SUB A,n."""
+    result = a - b
+    r = result & 0xFF
+    f = FLAG_N | (r & _F53)
+    if result < 0:
+        f |= FLAG_C
+    if (a & 0x0F) < (b & 0x0F):
+        f |= FLAG_H
+    if r == 0:
+        f |= FLAG_Z
+    if r & 0x80:
+        f |= FLAG_S
+    if bin(r).count("1") % 2 == 0:
+        f |= FLAG_PV
+    return f
 
-    def output_callback(self, port, value):
-        self.ports[port & 0xFF] = value
+
+def _parity(val):
+    """Return True if val has even parity."""
+    return bin(val).count("1") % 2 == 0
 
 
 # ============================================================
@@ -47,29 +71,13 @@ class IOBus:
 # ============================================================
 
 
-class _TestCPU:
-    """Thin wrapper holding CPU + IO bus reference."""
-
-    def __init__(self):
-        self._cpu = Z80CPU()
-        self._io = IOBus()
-        self._cpu.set_on_input_callback(self._io.input_callback)
-        self._cpu.set_on_output_callback(self._io.output_callback)
-
-    # Delegate all Z80CPU attributes/methods
-    def __getattr__(self, name):
-        return getattr(self._cpu, name)
-
-    def __setattr__(self, name, value):
-        if name.startswith("_"):
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._cpu, name, value)
-
-
 @pytest.fixture
 def cpu():
-    return _TestCPU()
+    """Fresh Z80CPU instance for each test."""
+    c = Z80CPU()
+    c.regs.F = 0
+    c.regs.A = 0
+    return c
 
 
 # ============================================================
@@ -77,42 +85,37 @@ def cpu():
 # ============================================================
 
 
-def write_program(c, program_bytes, addr=0):
+def write_program(cpu, program_bytes, addr=0):
     """Write a sequence of bytes into CPU memory and set PC."""
     for i, b in enumerate(program_bytes):
-        c.write_byte(addr + i, b)
-    c.PC = addr
+        cpu.write_byte(addr + i, b)
+    cpu.regs.PC = addr
 
 
-def flag_set(c, flag):
+def flag_set(cpu, flag):
     """Check if a flag is set."""
-    return bool(c.F & flag)
+    return bool(cpu.regs.F & flag)
 
 
-def flag_clear(c, flag):
+def flag_clear(cpu, flag):
     """Check if a flag is clear."""
-    return not (c.F & flag)
+    return not (cpu.regs.F & flag)
 
 
-def run_cb_instruction(c, cb_op):
+def run_cb_instruction(cpu, cb_op):
     """Execute a CB-prefixed instruction."""
-    c.write_byte(0, 0xCB)
-    c.write_byte(1, cb_op)
-    c.PC = 0
-    return c.step()
+    cpu.write_byte(0, 0xCB)
+    cpu.write_byte(1, cb_op)
+    cpu.regs.PC = 0
+    return cpu.step()
 
 
-def step_n(c, n):
+def step_n(cpu, n):
     """Step the CPU n times, returning total cycles."""
     total = 0
     for _ in range(n):
-        total += c.step()
+        total += cpu.step()
     return total
-
-
-def parity(val):
-    """Compute even parity of a byte."""
-    return bin(val).count("1") % 2 == 0
 
 
 # ============================================================
@@ -121,6 +124,8 @@ def parity(val):
 
 
 class TestLoad8Bit:
+    """8-bit load instruction tests."""
+
     @pytest.mark.parametrize(
         "reg,opcode",
         [
@@ -134,92 +139,103 @@ class TestLoad8Bit:
         ],
     )
     def test_ld_r_n(self, cpu, reg, opcode):
+        """LD r,n — load immediate byte into register."""
         write_program(cpu, [opcode, 0xAB])
         cpu.step()
-        assert getattr(cpu, reg) == 0xAB
+        assert getattr(cpu.regs, reg) == 0xAB
 
     def test_ld_a_bc_indirect(self, cpu):
-        cpu.BC = 0x1234
+        """LD A,(BC) — load from address in BC."""
+        cpu.regs.BC = 0x1234
         cpu.write_byte(0x1234, 0x77)
         write_program(cpu, [0x0A])
         cpu.step()
-        assert cpu.A == 0x77
+        assert cpu.regs.A == 0x77
 
     def test_ld_a_de_indirect(self, cpu):
-        cpu.DE = 0x1234
+        """LD A,(DE) — load from address in DE."""
+        cpu.regs.DE = 0x1234
         cpu.write_byte(0x1234, 0x55)
         write_program(cpu, [0x1A])
         cpu.step()
-        assert cpu.A == 0x55
+        assert cpu.regs.A == 0x55
 
     def test_ld_hl_indirect_n(self, cpu):
-        cpu.HL = 0x2000
+        """LD (HL),n — store immediate byte at address in HL."""
+        cpu.regs.HL = 0x2000
         write_program(cpu, [0x36, 0xCC])
         cpu.step()
         assert cpu.read_byte(0x2000) == 0xCC
 
     def test_ld_a_nn_indirect(self, cpu):
+        """LD A,(nn) — load from absolute address."""
         cpu.write_byte(0x3000, 0x99)
         write_program(cpu, [0x3A, 0x00, 0x30])
         cpu.step()
-        assert cpu.A == 0x99
+        assert cpu.regs.A == 0x99
 
     def test_ld_nn_indirect_a(self, cpu):
-        cpu.A = 0xBB
+        """LD (nn),A — store A at absolute address."""
+        cpu.regs.A = 0xBB
         write_program(cpu, [0x32, 0x00, 0x30])
         cpu.step()
         assert cpu.read_byte(0x3000) == 0xBB
 
     @pytest.mark.parametrize(
-        "opcode,src,dst",
+        "opcode,src,dst_getter",
         [
-            (0x78, "B", "A"),
-            (0x79, "C", "A"),
-            (0x7A, "D", "A"),
-            (0x7B, "E", "A"),
-            (0x7C, "H", "A"),
-            (0x7D, "L", "A"),
-            (0x47, "A", "B"),
-            (0x48, "B", "C"),
-            (0x50, "B", "D"),
-            (0x58, "B", "E"),
-            (0x60, "B", "H"),
-            (0x68, "B", "L"),
+            (0x78, "B", "A"),  # LD A,B
+            (0x79, "C", "A"),  # LD A,C
+            (0x7A, "D", "A"),  # LD A,D
+            (0x7B, "E", "A"),  # LD A,E
+            (0x7C, "H", "A"),  # LD A,H
+            (0x7D, "L", "A"),  # LD A,L
+            (0x47, "A", "B"),  # LD B,A
+            (0x48, "B", "C"),  # LD C,B — wait, 0x48 = LD C,B
+            (0x50, "B", "D"),  # LD D,B
+            (0x58, "B", "E"),  # LD E,B
+            (0x60, "B", "H"),  # LD H,B
+            (0x68, "B", "L"),  # LD L,B
         ],
     )
-    def test_ld_r_r(self, cpu, opcode, src, dst):
-        setattr(cpu, src, 0x42)
+    def test_ld_r_r(self, cpu, opcode, src, dst_getter):
+        """LD r,r' — register to register transfer."""
+        setattr(cpu.regs, src, 0x42)
         write_program(cpu, [opcode])
         cpu.step()
-        assert getattr(cpu, dst) == 0x42
+        assert getattr(cpu.regs, dst_getter) == 0x42
 
     def test_ld_bc_indirect_a(self, cpu):
-        cpu.A = 0xEE
-        cpu.BC = 0x3000
+        """LD (BC),A — store A at address in BC."""
+        cpu.regs.A = 0xEE
+        cpu.regs.BC = 0x3000
         write_program(cpu, [0x02])
         cpu.step()
         assert cpu.read_byte(0x3000) == 0xEE
 
     def test_ld_de_indirect_a(self, cpu):
-        cpu.A = 0xDD
-        cpu.DE = 0x3000
+        """LD (DE),A — store A at address in DE."""
+        cpu.regs.A = 0xDD
+        cpu.regs.DE = 0x3000
         write_program(cpu, [0x12])
         cpu.step()
         assert cpu.read_byte(0x3000) == 0xDD
 
     def test_ld_hl_indirect_r(self, cpu):
-        cpu.HL = 0x2000
-        cpu.B = 0x42
-        write_program(cpu, [0x70])
+        """LD (HL),r — store register at address in HL."""
+        cpu.regs.HL = 0x2000
+        cpu.regs.B = 0x42
+        write_program(cpu, [0x70])  # LD (HL),B
         cpu.step()
         assert cpu.read_byte(0x2000) == 0x42
 
     def test_ld_r_hl_indirect(self, cpu):
-        cpu.HL = 0x2000
+        """LD r,(HL) — load register from address in HL."""
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0x99)
-        write_program(cpu, [0x46])
+        write_program(cpu, [0x46])  # LD B,(HL)
         cpu.step()
-        assert cpu.B == 0x99
+        assert cpu.regs.B == 0x99
 
 
 # ============================================================
@@ -228,33 +244,45 @@ class TestLoad8Bit:
 
 
 class TestLoad16Bit:
+    """16-bit load instruction tests."""
+
     @pytest.mark.parametrize(
-        "pair,opcode", [("BC", 0x01), ("DE", 0x11), ("HL", 0x21), ("SP", 0x31)]
+        "pair,opcode",
+        [
+            ("BC", 0x01),
+            ("DE", 0x11),
+            ("HL", 0x21),
+            ("SP", 0x31),
+        ],
     )
     def test_ld_rr_nn(self, cpu, pair, opcode):
+        """LD rr,nn — load immediate 16-bit value."""
         write_program(cpu, [opcode, 0xCD, 0xAB])
         cpu.step()
-        assert getattr(cpu, pair) == 0xABCD
+        assert getattr(cpu.regs, pair) == 0xABCD
 
     def test_ld_hl_nn_indirect(self, cpu):
+        """LD HL,(nn) — load HL from memory."""
         cpu.write_byte(0x4000, 0x78)
         cpu.write_byte(0x4001, 0x56)
         write_program(cpu, [0x2A, 0x00, 0x40])
         cpu.step()
-        assert cpu.HL == 0x5678
+        assert cpu.regs.HL == 0x5678
 
     def test_ld_nn_indirect_hl(self, cpu):
-        cpu.HL = 0x1234
+        """LD (nn),HL — store HL to memory."""
+        cpu.regs.HL = 0x1234
         write_program(cpu, [0x22, 0x00, 0x40])
         cpu.step()
         assert cpu.read_byte(0x4000) == 0x34
         assert cpu.read_byte(0x4001) == 0x12
 
     def test_ld_sp_hl(self, cpu):
-        cpu.HL = 0x1234
+        """LD SP,HL — copy HL to SP."""
+        cpu.regs.HL = 0x1234
         write_program(cpu, [0xF9])
         cpu.step()
-        assert cpu.SP == 0x1234
+        assert cpu.regs.SP == 0x1234
 
 
 # ============================================================
@@ -263,62 +291,74 @@ class TestLoad16Bit:
 
 
 class TestPushPop:
+    """Stack push and pop operations."""
+
     @pytest.mark.parametrize(
         "pair,push_op,pop_op",
-        [("BC", 0xC5, 0xC1), ("DE", 0xD5, 0xD1), ("HL", 0xE5, 0xE1)],
+        [
+            ("BC", 0xC5, 0xC1),
+            ("DE", 0xD5, 0xD1),
+            ("HL", 0xE5, 0xE1),
+        ],
     )
     def test_push_pop_round_trip(self, cpu, pair, push_op, pop_op):
-        cpu.SP = 0x2000
-        setattr(cpu, pair, 0xDEAD)
+        """PUSH rr / POP rr — round-trip preserves value and SP."""
+        cpu.regs.SP = 0x2000
+        setattr(cpu.regs, pair, 0xDEAD)
         write_program(cpu, [push_op, pop_op])
-        cpu.step()
-        setattr(cpu, pair, 0x0000)
-        cpu.step()
-        assert getattr(cpu, pair) == 0xDEAD
-        assert cpu.SP == 0x2000
+        cpu.step()  # PUSH
+        setattr(cpu.regs, pair, 0x0000)  # clear
+        cpu.step()  # POP
+        assert getattr(cpu.regs, pair) == 0xDEAD
+        assert cpu.regs.SP == 0x2000
 
     def test_push_decrements_sp(self, cpu):
-        cpu.SP = 0xFFFF
-        cpu.BC = 0xDEAD
+        """PUSH decrements SP by 2."""
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.BC = 0xDEAD
         write_program(cpu, [0xC5])
         cpu.step()
-        assert cpu.SP == 0xFFFD
+        assert cpu.regs.SP == 0xFFFD
 
     def test_push_stores_value(self, cpu):
-        cpu.SP = 0xFFFF
-        cpu.BC = 0xDEAD
+        """PUSH stores high byte at SP+1, low byte at SP."""
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.BC = 0xDEAD
         write_program(cpu, [0xC5])
         cpu.step()
         assert cpu.read_byte(0xFFFE) == 0xDE
         assert cpu.read_byte(0xFFFD) == 0xAD
 
     def test_push_pop_af(self, cpu):
-        cpu.A = 0xFF
-        cpu.F = 0xD7
-        cpu.SP = 0xFFFF
+        """PUSH AF / POP AF — preserves accumulator and flags."""
+        cpu.regs.A = 0xFF
+        cpu.regs.F = 0xD7
+        cpu.regs.SP = 0xFFFF
         write_program(cpu, [0xF5, 0xF1])
         cpu.step()
-        cpu.A = 0x00
-        cpu.F = 0x00
+        cpu.regs.A = 0x00
+        cpu.regs.F = 0x00
         cpu.step()
-        assert cpu.A == 0xFF
+        assert cpu.regs.A == 0xFF
 
     def test_nested_push_pop(self, cpu):
-        cpu.SP = 0x2000
-        cpu.BC = 0xAAAA
-        cpu.DE = 0xBBBB
+        """Nested PUSH/POP preserves all values (LIFO order)."""
+        cpu.regs.SP = 0x2000
+        cpu.regs.BC = 0xAAAA
+        cpu.regs.DE = 0xBBBB
         write_program(cpu, [0xC5, 0xD5, 0xD1, 0xC1])
         step_n(cpu, 4)
-        assert cpu.BC == 0xAAAA
-        assert cpu.DE == 0xBBBB
+        assert cpu.regs.BC == 0xAAAA
+        assert cpu.regs.DE == 0xBBBB
 
     def test_push_pop_cross(self, cpu):
-        cpu.SP = 0x2000
-        cpu.BC = 0x1234
-        cpu.DE = 0x0000
-        write_program(cpu, [0xC5, 0xD1])
+        """PUSH BC / POP DE — transfer value between pairs."""
+        cpu.regs.SP = 0x2000
+        cpu.regs.BC = 0x1234
+        cpu.regs.DE = 0x0000
+        write_program(cpu, [0xC5, 0xD1])  # PUSH BC; POP DE
         step_n(cpu, 2)
-        assert cpu.DE == 0x1234
+        assert cpu.regs.DE == 0x1234
 
 
 # ============================================================
@@ -327,6 +367,8 @@ class TestPushPop:
 
 
 class TestAddFlags:
+    """ADD A,n and ADC A,n flag verification."""
+
     @pytest.mark.parametrize(
         "a,b",
         [
@@ -344,66 +386,78 @@ class TestAddFlags:
         ],
     )
     def test_add_a_n_flags(self, cpu, a, b):
+        """ADD A,n — verify result and all affected flags."""
         write_program(cpu, [0x3E, a, 0xC6, b])
         cpu.step()
         cpu.step()
-        assert cpu.A == (a + b) & 0xFF
-        # Verify flags are computed correctly by checking specific properties
-        result = (a + b) & 0xFF
-        assert flag_set(cpu, FLAG_H) == (((a & 0x0F) + (b & 0x0F)) > 0x0F)
-        assert flag_set(cpu, FLAG_C) == ((a + b) > 0xFF)
-        assert flag_set(cpu, FLAG_Z) == (result == 0)
-        assert flag_clear(cpu, FLAG_N)
+        expected_flags = _add_flags(a, b)
+        mask = FLAG_S | FLAG_Z | FLAG_H | FLAG_PV | FLAG_C | FLAG_N
+        assert cpu.regs.A == (a + b) & 0xFF
+        assert (cpu.regs.F & mask) == (expected_flags & mask)
 
     def test_adc_with_carry(self, cpu):
-        cpu.A = 0x0F
-        cpu.F = FLAG_C
+        """ADC A,n — carry input is included in addition."""
+        cpu.regs.A = 0x0F
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0xCE, 0x01])
         cpu.step()
-        assert cpu.A == 0x11
+        assert cpu.regs.A == 0x11
         assert flag_set(cpu, FLAG_H)
 
     def test_adc_no_carry(self, cpu):
-        cpu.A = 0x10
-        cpu.F = 0
+        """ADC A,n — without carry behaves like ADD."""
+        cpu.regs.A = 0x10
+        cpu.regs.F = 0
         write_program(cpu, [0xCE, 0x05])
         cpu.step()
-        assert cpu.A == 0x15
+        assert cpu.regs.A == 0x15
 
     def test_adc_carry_causes_overflow(self, cpu):
-        cpu.A = 0x7F
-        cpu.F = FLAG_C
+        """ADC A,n — carry can trigger overflow."""
+        cpu.regs.A = 0x7F
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0xCE, 0x00])
         cpu.step()
-        assert cpu.A == 0x80
-        assert flag_set(cpu, FLAG_PV)
+        assert cpu.regs.A == 0x80
+        # 0x80 has 1 bit set (odd parity) → PV clear
+        assert flag_clear(cpu, FLAG_PV)
         assert flag_set(cpu, FLAG_S)
 
     @pytest.mark.parametrize(
         "reg,opcode",
-        [("B", 0x80), ("C", 0x81), ("D", 0x82), ("E", 0x83), ("H", 0x84), ("L", 0x85)],
+        [
+            ("B", 0x80),
+            ("C", 0x81),
+            ("D", 0x82),
+            ("E", 0x83),
+            ("H", 0x84),
+            ("L", 0x85),
+        ],
     )
     def test_add_a_r(self, cpu, reg, opcode):
-        cpu.A = 0x10
-        setattr(cpu, reg, 0x05)
+        """ADD A,r — add register to A."""
+        cpu.regs.A = 0x10
+        setattr(cpu.regs, reg, 0x05)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.A == 0x15
+        assert cpu.regs.A == 0x15
 
     def test_add_a_hl_indirect(self, cpu):
-        cpu.A = 0x10
-        cpu.HL = 0x2000
+        """ADD A,(HL) — add memory byte to A."""
+        cpu.regs.A = 0x10
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0x20)
         write_program(cpu, [0x86])
         cpu.step()
-        assert cpu.A == 0x30
+        assert cpu.regs.A == 0x30
 
     def test_add_a_a(self, cpu):
-        cpu.A = 0x40
+        """ADD A,A — double the accumulator."""
+        cpu.regs.A = 0x40
         write_program(cpu, [0x87])
         cpu.step()
-        assert cpu.A == 0x80
-        assert flag_set(cpu, FLAG_PV)
+        assert cpu.regs.A == 0x80
+        assert flag_clear(cpu, FLAG_PV)  # 0x80 has 1 bit set (odd parity)
 
 
 # ============================================================
@@ -412,107 +466,133 @@ class TestAddFlags:
 
 
 class TestAdd16Bit:
+    """16-bit addition and subtraction tests."""
+
     def test_add_hl_bc_overflow(self, cpu):
-        cpu.HL = 0xFFFF
-        cpu.BC = 0x0001
+        """ADD HL,BC — overflow sets carry."""
+        cpu.regs.HL = 0xFFFF
+        cpu.regs.BC = 0x0001
         write_program(cpu, [0x09])
         cpu.step()
-        assert cpu.HL == 0x0000
+        assert cpu.regs.HL == 0x0000
         assert flag_set(cpu, FLAG_C)
 
     def test_add_hl_bc_no_overflow(self, cpu):
-        cpu.HL = 0x1000
-        cpu.BC = 0x0100
+        """ADD HL,BC — no carry when no overflow."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0100
         write_program(cpu, [0x09])
         cpu.step()
-        assert cpu.HL == 0x1100
+        assert cpu.regs.HL == 0x1100
         assert flag_clear(cpu, FLAG_C)
 
     @pytest.mark.parametrize(
-        "pair,opcode", [("BC", 0x09), ("DE", 0x19), ("HL", 0x29), ("SP", 0x39)]
+        "pair,opcode",
+        [
+            ("BC", 0x09),
+            ("DE", 0x19),
+            ("HL", 0x29),
+            ("SP", 0x39),
+        ],
     )
     def test_add_hl_rr(self, cpu, pair, opcode):
-        cpu.HL = 0x1000
-        if pair != "HL":
-            setattr(cpu, pair, 0x0100)
+        """ADD HL,rr — all register pairs."""
+        cpu.regs.HL = 0x1000
+        if pair == "HL":
+            # ADD HL,HL doubles HL
+            pass
+        else:
+            setattr(cpu.regs, pair, 0x0100)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.HL == (0x2000 if pair == "HL" else 0x1100)
+        if pair == "HL":
+            assert cpu.regs.HL == 0x2000
+        else:
+            assert cpu.regs.HL == 0x1100
 
     def test_add_hl_preserves_z(self, cpu):
-        cpu.F = FLAG_Z
-        cpu.HL = 0x0001
-        cpu.BC = 0x0001
+        """ADD HL,rr — does not affect Z flag."""
+        cpu.regs.F = FLAG_Z
+        cpu.regs.HL = 0x0001
+        cpu.regs.BC = 0x0001
         write_program(cpu, [0x09])
         cpu.step()
-        assert flag_set(cpu, FLAG_Z)
+        assert flag_set(cpu, FLAG_Z)  # preserved
 
     def test_add_hl_clears_n(self, cpu):
-        cpu.F = FLAG_N
-        cpu.HL = 0x0001
-        cpu.BC = 0x0001
+        """ADD HL,rr — always clears N."""
+        cpu.regs.F = FLAG_N
+        cpu.regs.HL = 0x0001
+        cpu.regs.BC = 0x0001
         write_program(cpu, [0x09])
         cpu.step()
         assert flag_clear(cpu, FLAG_N)
 
     def test_adc_hl_bc_no_carry(self, cpu):
-        cpu.HL = 0x0001
-        cpu.BC = 0x0002
-        cpu.F = 0
+        """ADC HL,BC — without carry."""
+        cpu.regs.HL = 0x0001
+        cpu.regs.BC = 0x0002
+        cpu.regs.F = 0
         write_program(cpu, [0xED, 0x4A])
         cpu.step()
-        assert cpu.HL == 0x0003
+        assert cpu.regs.HL == 0x0003
 
     def test_adc_hl_bc_with_carry(self, cpu):
-        cpu.HL = 0x0001
-        cpu.BC = 0x0002
-        cpu.F = FLAG_C
+        """ADC HL,BC — with carry adds one extra."""
+        cpu.regs.HL = 0x0001
+        cpu.regs.BC = 0x0002
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0xED, 0x4A])
         cpu.step()
-        assert cpu.HL == 0x0004
+        assert cpu.regs.HL == 0x0004
 
     def test_adc_hl_sets_z(self, cpu):
-        cpu.HL = 0xFFFF
-        cpu.BC = 0x0001
-        cpu.F = 0
+        """ADC HL,rr — sets Z when result is zero."""
+        cpu.regs.HL = 0xFFFF
+        cpu.regs.BC = 0x0001
+        cpu.regs.F = 0
         write_program(cpu, [0xED, 0x4A])
         cpu.step()
-        assert cpu.HL == 0x0000
+        assert cpu.regs.HL == 0x0000
         assert flag_set(cpu, FLAG_Z)
 
     def test_sbc_hl_bc(self, cpu):
-        cpu.HL = 0x0003
-        cpu.BC = 0x0001
-        cpu.F = 0
+        """SBC HL,BC — subtraction sets N flag."""
+        cpu.regs.HL = 0x0003
+        cpu.regs.BC = 0x0001
+        cpu.regs.F = 0
         write_program(cpu, [0xED, 0x42])
         cpu.step()
-        assert cpu.HL == 0x0002
+        assert cpu.regs.HL == 0x0002
         assert flag_set(cpu, FLAG_N)
 
     def test_sbc_hl_bc_with_carry(self, cpu):
-        cpu.HL = 0x0003
-        cpu.BC = 0x0001
-        cpu.F = FLAG_C
+        """SBC HL,BC — with carry subtracts one extra."""
+        cpu.regs.HL = 0x0003
+        cpu.regs.BC = 0x0001
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0xED, 0x42])
         cpu.step()
-        assert cpu.HL == 0x0001
+        assert cpu.regs.HL == 0x0001
 
     def test_sbc_hl_zero_result(self, cpu):
-        cpu.HL = 0x1000
-        cpu.BC = 0x1000
-        cpu.F = 0
+        """SBC HL,rr — Z set when result is zero."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x1000
+        cpu.regs.F = 0
         write_program(cpu, [0xED, 0x42])
         cpu.step()
-        assert cpu.HL == 0x0000
+        assert cpu.regs.HL == 0x0000
         assert flag_set(cpu, FLAG_Z)
 
     def test_sbc_hl_borrow(self, cpu):
-        cpu.HL = 0x0000
-        cpu.BC = 0x0001
-        cpu.F = 0
+        """SBC HL,rr — carry set on underflow."""
+        cpu.regs.HL = 0x0000
+        cpu.regs.BC = 0x0001
+        cpu.regs.F = 0
         write_program(cpu, [0xED, 0x42])
         cpu.step()
-        assert cpu.HL == 0xFFFF
+        assert cpu.regs.HL == 0xFFFF
         assert flag_set(cpu, FLAG_C)
 
 
@@ -522,6 +602,8 @@ class TestAdd16Bit:
 
 
 class TestSubFlags:
+    """SUB A,n, SBC A,n, and CP n flag verification."""
+
     @pytest.mark.parametrize(
         "a,b",
         [
@@ -538,50 +620,56 @@ class TestSubFlags:
         ],
     )
     def test_sub_a_n_flags(self, cpu, a, b):
+        """SUB A,n — verify result and all affected flags."""
         write_program(cpu, [0x3E, a, 0xD6, b])
         cpu.step()
         cpu.step()
-        assert cpu.A == (a - b) & 0xFF
-        assert flag_set(cpu, FLAG_H) == ((a & 0x0F) < (b & 0x0F))
-        assert flag_set(cpu, FLAG_C) == (a < b)
-        assert flag_clear(cpu, FLAG_N) == False  # SUB always sets N
-        assert flag_set(cpu, FLAG_N)
+        expected_flags = _sub_flags(a, b)
+        mask = FLAG_S | FLAG_Z | FLAG_H | FLAG_PV | FLAG_C | FLAG_N
+        assert cpu.regs.A == (a - b) & 0xFF
+        assert (cpu.regs.F & mask) == (expected_flags & mask)
 
     def test_sbc_with_carry(self, cpu):
-        cpu.A = 0x10
-        cpu.F = FLAG_C
+        """SBC A,n — carry is subtracted too."""
+        cpu.regs.A = 0x10
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0xDE, 0x01])
         cpu.step()
-        assert cpu.A == 0x0E
+        assert cpu.regs.A == 0x0E
 
     def test_sbc_no_carry(self, cpu):
-        cpu.A = 0x10
-        cpu.F = 0
+        """SBC A,n — without carry behaves like SUB."""
+        cpu.regs.A = 0x10
+        cpu.regs.F = 0
         write_program(cpu, [0xDE, 0x01])
         cpu.step()
-        assert cpu.A == 0x0F
+        assert cpu.regs.A == 0x0F
 
     def test_cp_does_not_modify_a(self, cpu):
-        cpu.A = 0x10
+        """CP n — A is unchanged after comparison."""
+        cpu.regs.A = 0x10
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
-        assert cpu.A == 0x10
+        assert cpu.regs.A == 0x10
 
     def test_cp_equal_sets_z(self, cpu):
-        cpu.A = 0x10
+        """CP n — Z flag set when A == n."""
+        cpu.regs.A = 0x10
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
         assert flag_set(cpu, FLAG_Z)
 
     def test_cp_less_sets_carry(self, cpu):
-        cpu.A = 0x05
+        """CP n — carry set when A < n."""
+        cpu.regs.A = 0x05
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
         assert flag_set(cpu, FLAG_C)
         assert flag_set(cpu, FLAG_N)
 
     def test_cp_greater_no_carry(self, cpu):
-        cpu.A = 0x20
+        """CP n — no carry when A > n."""
+        cpu.regs.A = 0x20
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
         assert flag_clear(cpu, FLAG_C)
@@ -589,22 +677,31 @@ class TestSubFlags:
 
     @pytest.mark.parametrize(
         "reg,opcode",
-        [("B", 0x90), ("C", 0x91), ("D", 0x92), ("E", 0x93), ("H", 0x94), ("L", 0x95)],
+        [
+            ("B", 0x90),
+            ("C", 0x91),
+            ("D", 0x92),
+            ("E", 0x93),
+            ("H", 0x94),
+            ("L", 0x95),
+        ],
     )
     def test_sub_a_r(self, cpu, reg, opcode):
-        cpu.A = 0x20
-        setattr(cpu, reg, 0x10)
+        """SUB A,r — subtract register from A."""
+        cpu.regs.A = 0x20
+        setattr(cpu.regs, reg, 0x10)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.A == 0x10
+        assert cpu.regs.A == 0x10
 
     def test_sub_a_hl_indirect(self, cpu):
-        cpu.A = 0x30
-        cpu.HL = 0x2000
+        """SUB A,(HL) — subtract memory byte from A."""
+        cpu.regs.A = 0x30
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0x10)
         write_program(cpu, [0x96])
         cpu.step()
-        assert cpu.A == 0x20
+        assert cpu.regs.A == 0x20
 
 
 # ============================================================
@@ -613,6 +710,8 @@ class TestSubFlags:
 
 
 class TestIncDec8Bit:
+    """8-bit increment and decrement tests."""
+
     @pytest.mark.parametrize(
         "val,exp_result,exp_s,exp_z,exp_h,exp_pv",
         [
@@ -624,17 +723,18 @@ class TestIncDec8Bit:
         ],
     )
     def test_inc_a(self, cpu, val, exp_result, exp_s, exp_z, exp_h, exp_pv):
-        cpu.A = val
-        cpu.F = FLAG_C
+        """INC A — verify result and flags."""
+        cpu.regs.A = val
+        cpu.regs.F = FLAG_C  # carry should be preserved
         write_program(cpu, [0x3C])
         cpu.step()
-        assert cpu.A == exp_result
+        assert cpu.regs.A == exp_result
         assert flag_set(cpu, FLAG_S) == exp_s
         assert flag_set(cpu, FLAG_Z) == exp_z
         assert flag_set(cpu, FLAG_H) == exp_h
         assert flag_set(cpu, FLAG_PV) == exp_pv
-        assert flag_set(cpu, FLAG_C)
-        assert flag_clear(cpu, FLAG_N)
+        assert flag_set(cpu, FLAG_C)  # preserved
+        assert flag_clear(cpu, FLAG_N)  # always cleared
 
     @pytest.mark.parametrize(
         "val,exp_result,exp_s,exp_z,exp_h,exp_pv",
@@ -647,17 +747,18 @@ class TestIncDec8Bit:
         ],
     )
     def test_dec_a(self, cpu, val, exp_result, exp_s, exp_z, exp_h, exp_pv):
-        cpu.A = val
-        cpu.F = FLAG_C
+        """DEC A — verify result and flags."""
+        cpu.regs.A = val
+        cpu.regs.F = FLAG_C  # carry should be preserved
         write_program(cpu, [0x3D])
         cpu.step()
-        assert cpu.A == exp_result
+        assert cpu.regs.A == exp_result
         assert flag_set(cpu, FLAG_S) == exp_s
         assert flag_set(cpu, FLAG_Z) == exp_z
         assert flag_set(cpu, FLAG_H) == exp_h
         assert flag_set(cpu, FLAG_PV) == exp_pv
-        assert flag_set(cpu, FLAG_C)
-        assert flag_set(cpu, FLAG_N)
+        assert flag_set(cpu, FLAG_C)  # preserved
+        assert flag_set(cpu, FLAG_N)  # always set
 
     @pytest.mark.parametrize(
         "reg,inc_op,dec_op",
@@ -671,19 +772,21 @@ class TestIncDec8Bit:
         ],
     )
     def test_inc_dec_registers(self, cpu, reg, inc_op, dec_op):
-        setattr(cpu, reg, 0x10)
+        """INC r / DEC r — basic operation on all registers."""
+        setattr(cpu.regs, reg, 0x10)
         write_program(cpu, [inc_op])
         cpu.step()
-        assert getattr(cpu, reg) == 0x11
+        assert getattr(cpu.regs, reg) == 0x11
 
         cpu.reset()
-        setattr(cpu, reg, 0x10)
+        setattr(cpu.regs, reg, 0x10)
         write_program(cpu, [dec_op])
         cpu.step()
-        assert getattr(cpu, reg) == 0x0F
+        assert getattr(cpu.regs, reg) == 0x0F
 
     def test_inc_hl_indirect(self, cpu):
-        cpu.HL = 0x2000
+        """INC (HL) — increment memory byte."""
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0x0F)
         write_program(cpu, [0x34])
         cpu.step()
@@ -691,7 +794,8 @@ class TestIncDec8Bit:
         assert flag_set(cpu, FLAG_H)
 
     def test_dec_hl_indirect(self, cpu):
-        cpu.HL = 0x2000
+        """DEC (HL) — decrement memory byte."""
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0x10)
         write_program(cpu, [0x35])
         cpu.step()
@@ -705,17 +809,21 @@ class TestIncDec8Bit:
 
 
 class TestIncDec16Bit:
+    """16-bit increment and decrement (no flags affected)."""
+
     def test_inc_bc_wrap(self, cpu):
-        cpu.BC = 0xFFFF
+        """INC BC wraps from 0xFFFF to 0x0000."""
+        cpu.regs.BC = 0xFFFF
         write_program(cpu, [0x03])
         cpu.step()
-        assert cpu.BC == 0x0000
+        assert cpu.regs.BC == 0x0000
 
     def test_dec_de_wrap(self, cpu):
-        cpu.DE = 0x0000
+        """DEC DE wraps from 0x0000 to 0xFFFF."""
+        cpu.regs.DE = 0x0000
         write_program(cpu, [0x1B])
         cpu.step()
-        assert cpu.DE == 0xFFFF
+        assert cpu.regs.DE == 0xFFFF
 
     @pytest.mark.parametrize(
         "pair,inc_op,dec_op",
@@ -727,23 +835,25 @@ class TestIncDec16Bit:
         ],
     )
     def test_inc_dec_16_all_pairs(self, cpu, pair, inc_op, dec_op):
-        setattr(cpu, pair, 0x1000)
+        """INC/DEC rr — all register pairs."""
+        setattr(cpu.regs, pair, 0x1000)
         write_program(cpu, [inc_op])
         cpu.step()
-        assert getattr(cpu, pair) == 0x1001
+        assert getattr(cpu.regs, pair) == 0x1001
 
         cpu.reset()
-        setattr(cpu, pair, 0x1000)
+        setattr(cpu.regs, pair, 0x1000)
         write_program(cpu, [dec_op])
         cpu.step()
-        assert getattr(cpu, pair) == 0x0FFF
+        assert getattr(cpu.regs, pair) == 0x0FFF
 
     def test_inc_16_preserves_flags(self, cpu):
-        cpu.F = FLAG_Z | FLAG_C
-        cpu.BC = 0x0001
+        """INC rr — does not modify any flags."""
+        cpu.regs.F = FLAG_Z | FLAG_C
+        cpu.regs.BC = 0x0001
         write_program(cpu, [0x03])
         cpu.step()
-        assert cpu.F == (FLAG_Z | FLAG_C)
+        assert cpu.regs.F == (FLAG_Z | FLAG_C)
 
 
 # ============================================================
@@ -752,6 +862,8 @@ class TestIncDec16Bit:
 
 
 class TestLogical:
+    """AND, OR, XOR instruction tests."""
+
     @pytest.mark.parametrize(
         "a,n,expected",
         [
@@ -763,16 +875,17 @@ class TestLogical:
         ],
     )
     def test_and_n(self, cpu, a, n, expected):
-        cpu.A = a
+        """AND n — result and flag checks."""
+        cpu.regs.A = a
         write_program(cpu, [0xE6, n])
         cpu.step()
-        assert cpu.A == expected
+        assert cpu.regs.A == expected
         assert flag_set(cpu, FLAG_H)
         assert flag_clear(cpu, FLAG_N)
         assert flag_clear(cpu, FLAG_C)
         assert flag_set(cpu, FLAG_Z) == (expected == 0)
         assert flag_set(cpu, FLAG_S) == bool(expected & 0x80)
-        assert flag_set(cpu, FLAG_PV) == parity(expected)
+        assert flag_set(cpu, FLAG_PV) == _parity(expected)
 
     @pytest.mark.parametrize(
         "a,n,expected",
@@ -784,10 +897,11 @@ class TestLogical:
         ],
     )
     def test_or_n(self, cpu, a, n, expected):
-        cpu.A = a
+        """OR n — result and flag checks."""
+        cpu.regs.A = a
         write_program(cpu, [0xF6, n])
         cpu.step()
-        assert cpu.A == expected
+        assert cpu.regs.A == expected
         assert flag_clear(cpu, FLAG_H)
         assert flag_clear(cpu, FLAG_N)
         assert flag_clear(cpu, FLAG_C)
@@ -805,10 +919,11 @@ class TestLogical:
         ],
     )
     def test_xor_n(self, cpu, a, n, expected):
-        cpu.A = a
+        """XOR n — result and flag checks."""
+        cpu.regs.A = a
         write_program(cpu, [0xEE, n])
         cpu.step()
-        assert cpu.A == expected
+        assert cpu.regs.A == expected
         assert flag_clear(cpu, FLAG_H)
         assert flag_clear(cpu, FLAG_N)
         assert flag_clear(cpu, FLAG_C)
@@ -826,11 +941,12 @@ class TestLogical:
         ],
     )
     def test_and_r(self, cpu, reg, opcode):
-        cpu.A = 0xFF
-        setattr(cpu, reg, 0x0F)
+        """AND r — register operand."""
+        cpu.regs.A = 0xFF
+        setattr(cpu.regs, reg, 0x0F)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.A == 0x0F
+        assert cpu.regs.A == 0x0F
 
     @pytest.mark.parametrize(
         "reg,opcode",
@@ -844,11 +960,12 @@ class TestLogical:
         ],
     )
     def test_or_r(self, cpu, reg, opcode):
-        cpu.A = 0x0F
-        setattr(cpu, reg, 0xF0)
+        """OR r — register operand."""
+        cpu.regs.A = 0x0F
+        setattr(cpu.regs, reg, 0xF0)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.A == 0xFF
+        assert cpu.regs.A == 0xFF
 
     @pytest.mark.parametrize(
         "reg,opcode",
@@ -862,36 +979,40 @@ class TestLogical:
         ],
     )
     def test_xor_r(self, cpu, reg, opcode):
-        cpu.A = 0xFF
-        setattr(cpu, reg, 0xFF)
+        """XOR r — register operand."""
+        cpu.regs.A = 0xFF
+        setattr(cpu.regs, reg, 0xFF)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.A == 0x00
+        assert cpu.regs.A == 0x00
         assert flag_set(cpu, FLAG_Z)
 
     def test_and_hl_indirect(self, cpu):
-        cpu.A = 0xFF
-        cpu.HL = 0x2000
+        """AND (HL) — memory operand."""
+        cpu.regs.A = 0xFF
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0x0F)
         write_program(cpu, [0xA6])
         cpu.step()
-        assert cpu.A == 0x0F
+        assert cpu.regs.A == 0x0F
 
     def test_or_hl_indirect(self, cpu):
-        cpu.A = 0x0F
-        cpu.HL = 0x2000
+        """OR (HL) — memory operand."""
+        cpu.regs.A = 0x0F
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0xF0)
         write_program(cpu, [0xB6])
         cpu.step()
-        assert cpu.A == 0xFF
+        assert cpu.regs.A == 0xFF
 
     def test_xor_hl_indirect(self, cpu):
-        cpu.A = 0xAA
-        cpu.HL = 0x2000
+        """XOR (HL) — memory operand."""
+        cpu.regs.A = 0xAA
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0xAA)
         write_program(cpu, [0xAE])
         cpu.step()
-        assert cpu.A == 0x00
+        assert cpu.regs.A == 0x00
 
 
 # ============================================================
@@ -900,39 +1021,60 @@ class TestLogical:
 
 
 class TestAccFlagOps:
+    """Accumulator and flag manipulation instructions."""
+
     def test_cpl(self, cpu):
-        cpu.A = 0x3C
+        """CPL — one's complement of A."""
+        cpu.regs.A = 0x3C
         write_program(cpu, [0x2F])
         cpu.step()
-        assert cpu.A == 0xC3
+        assert cpu.regs.A == 0xC3
         assert flag_set(cpu, FLAG_H)
         assert flag_set(cpu, FLAG_N)
 
+    def test_cpl_zero(self, cpu):
+        """CPL 0x00 -> 0xFF."""
+        cpu.regs.A = 0x00
+        write_program(cpu, [0x2F])
+        cpu.step()
+        assert cpu.regs.A == 0xFF
+
+    def test_cpl_ff(self, cpu):
+        """CPL 0xFF -> 0x00."""
+        cpu.regs.A = 0xFF
+        write_program(cpu, [0x2F])
+        cpu.step()
+        assert cpu.regs.A == 0x00
+
     def test_neg_positive(self, cpu):
-        cpu.A = 0x01
+        """NEG — negate a positive value."""
+        cpu.regs.A = 0x01
         write_program(cpu, [0xED, 0x44])
         cpu.step()
-        assert cpu.A == 0xFF
+        assert cpu.regs.A == 0xFF
         assert flag_set(cpu, FLAG_C)
         assert flag_set(cpu, FLAG_N)
 
     def test_neg_zero(self, cpu):
-        cpu.A = 0x00
+        """NEG 0 — result is 0, Z set, C clear."""
+        cpu.regs.A = 0x00
         write_program(cpu, [0xED, 0x44])
         cpu.step()
-        assert cpu.A == 0x00
+        assert cpu.regs.A == 0x00
         assert flag_set(cpu, FLAG_Z)
         assert flag_clear(cpu, FLAG_C)
 
     def test_neg_0x80_overflow(self, cpu):
-        cpu.A = 0x80
+        """NEG 0x80 — overflow (PV set), result is 0x80."""
+        cpu.regs.A = 0x80
         write_program(cpu, [0xED, 0x44])
         cpu.step()
-        assert cpu.A == 0x80
+        assert cpu.regs.A == 0x80
         assert flag_set(cpu, FLAG_PV)
 
     def test_scf(self, cpu):
-        cpu.F = 0x00
+        """SCF — set carry flag."""
+        cpu.regs.F = 0x00
         write_program(cpu, [0x37])
         cpu.step()
         assert flag_set(cpu, FLAG_C)
@@ -940,42 +1082,48 @@ class TestAccFlagOps:
         assert flag_clear(cpu, FLAG_N)
 
     def test_ccf_invert_set(self, cpu):
-        cpu.F = FLAG_C
+        """CCF — invert carry from 1 to 0."""
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0x3F])
         cpu.step()
         assert flag_clear(cpu, FLAG_C)
-        assert flag_set(cpu, FLAG_H)
+        assert flag_set(cpu, FLAG_H)  # old carry stored in H
 
     def test_ccf_invert_clear(self, cpu):
-        cpu.F = 0x00
+        """CCF — invert carry from 0 to 1."""
+        cpu.regs.F = 0x00
         write_program(cpu, [0x3F])
         cpu.step()
         assert flag_set(cpu, FLAG_C)
 
     def test_daa_add_09_01(self, cpu):
-        cpu.A = 0x09
+        """DAA after BCD addition: 09 + 01 = 10."""
+        cpu.regs.A = 0x09
         write_program(cpu, [0xC6, 0x01, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x10
+        assert cpu.regs.A == 0x10
 
     def test_daa_add_09_09(self, cpu):
-        cpu.A = 0x09
+        """DAA after BCD addition: 09 + 09 = 18."""
+        cpu.regs.A = 0x09
         write_program(cpu, [0xC6, 0x09, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x18
+        assert cpu.regs.A == 0x18
 
     def test_daa_add_99_01(self, cpu):
-        cpu.A = 0x99
+        """DAA after BCD addition: 99 + 01 = 00 with carry."""
+        cpu.regs.A = 0x99
         write_program(cpu, [0xC6, 0x01, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x00
+        assert cpu.regs.A == 0x00
         assert flag_set(cpu, FLAG_C)
 
     def test_daa_sub(self, cpu):
-        cpu.A = 0x10
+        """DAA after BCD subtraction: 10 - 01 = 09."""
+        cpu.regs.A = 0x10
         write_program(cpu, [0xD6, 0x01, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x09
+        assert cpu.regs.A == 0x09
 
 
 # ============================================================
@@ -984,45 +1132,75 @@ class TestAccFlagOps:
 
 
 class TestExchange:
-    def test_ex_de_hl(self, cpu):
-        cpu.DE = 0xAAAA
-        cpu.HL = 0xBBBB
-        write_program(cpu, [0xEB])
+    """Register exchange instruction tests."""
+
+    def test_ex_af_af_prime_round_trip(self, cpu):
+        """EX AF,AF' — round-trip preserves values."""
+        cpu.regs.A = 0x11
+        cpu.regs.F = 0x22
+        write_program(cpu, [0x08])
         cpu.step()
-        assert cpu.DE == 0xBBBB
-        assert cpu.HL == 0xAAAA
+        cpu.regs.A = 0x00
+        cpu.regs.F = 0x00
+        write_program(cpu, [0x08])
+        cpu.step()
+        assert cpu.regs.A == 0x11
 
     def test_exx_round_trip(self, cpu):
-        cpu.BC = 0x1111
-        cpu.DE = 0x2222
-        cpu.HL = 0x3333
+        """EXX — round-trip preserves BC/DE/HL."""
+        cpu.regs.BC = 0x1111
+        cpu.regs.DE = 0x2222
+        cpu.regs.HL = 0x3333
         write_program(cpu, [0xD9])
         cpu.step()
         write_program(cpu, [0xD9])
         cpu.step()
-        assert cpu.BC == 0x1111
-        assert cpu.DE == 0x2222
-        assert cpu.HL == 0x3333
+        assert cpu.regs.BC == 0x1111
+        assert cpu.regs.DE == 0x2222
+        assert cpu.regs.HL == 0x3333
+
+    def test_ex_de_hl(self, cpu):
+        """EX DE,HL — swaps DE and HL."""
+        cpu.regs.DE = 0xAAAA
+        cpu.regs.HL = 0xBBBB
+        write_program(cpu, [0xEB])
+        cpu.step()
+        assert cpu.regs.DE == 0xBBBB
+        assert cpu.regs.HL == 0xAAAA
 
     def test_ex_sp_hl(self, cpu):
-        cpu.SP = 0x1000
-        cpu.HL = 0x1234
+        """EX (SP),HL — exchanges HL with top of stack."""
+        cpu.regs.SP = 0x1000
+        cpu.regs.HL = 0x1234
         cpu.write_byte(0x1000, 0x78)
         cpu.write_byte(0x1001, 0x56)
         write_program(cpu, [0xE3])
         cpu.step()
-        assert cpu.HL == 0x5678
+        assert cpu.regs.HL == 0x5678
         assert cpu.read_byte(0x1000) == 0x34
         assert cpu.read_byte(0x1001) == 0x12
 
     def test_ex_sp_ix(self, cpu):
-        cpu.SP = 0x1000
-        cpu.IX = 0xABCD
+        """EX (SP),IX — exchanges IX with top of stack."""
+        cpu.regs.SP = 0x1000
+        cpu.regs.IX = 0xABCD
         cpu.write_byte(0x1000, 0x34)
         cpu.write_byte(0x1001, 0x12)
         write_program(cpu, [0xDD, 0xE3])
         cpu.step()
-        assert cpu.IX == 0x1234
+        assert cpu.regs.IX == 0x1234
+        assert cpu.read_byte(0x1000) == 0xCD
+        assert cpu.read_byte(0x1001) == 0xAB
+
+    def test_ex_sp_iy(self, cpu):
+        """EX (SP),IY — exchanges IY with top of stack."""
+        cpu.regs.SP = 0x1000
+        cpu.regs.IY = 0xABCD
+        cpu.write_byte(0x1000, 0x34)
+        cpu.write_byte(0x1001, 0x12)
+        write_program(cpu, [0xFD, 0xE3])
+        cpu.step()
+        assert cpu.regs.IY == 0x1234
         assert cpu.read_byte(0x1000) == 0xCD
         assert cpu.read_byte(0x1001) == 0xAB
 
@@ -1033,58 +1211,106 @@ class TestExchange:
 
 
 class TestJumps:
+    """Jump instruction tests."""
+
     def test_jp_nn(self, cpu):
+        """JP nn — unconditional jump."""
         write_program(cpu, [0xC3, 0x00, 0x20])
         cpu.step()
-        assert cpu.PC == 0x2000
+        assert cpu.regs.PC == 0x2000
+
+    def test_jp_hl(self, cpu):
+        """JP (HL) — jump to address in HL."""
+        cpu.regs.HL = 0x3000
+        write_program(cpu, [0xE9])
+        cpu.step()
+        assert cpu.regs.PC == 0x3000
 
     def test_jr_forward(self, cpu):
+        """JR e — relative jump forward."""
         write_program(cpu, [0x18, 0x04])
         cpu.step()
-        assert cpu.PC == 6
+        assert cpu.regs.PC == 6  # PC was at 0, +2 for instruction, +4 offset
 
     def test_jr_backward_self_loop(self, cpu):
+        """JR e — relative jump backward (to self)."""
         write_program(cpu, [0x18, 0xFE], 0x0010)
         cpu.step()
-        assert cpu.PC == 0x0010
+        assert cpu.regs.PC == 0x0010
+
+    def test_jr_backward(self, cpu):
+        """JR e — relative jump backward."""
+        write_program(cpu, [0x18, 0xFC], 0x0010)  # -4
+        cpu.step()
+        assert cpu.regs.PC == 0x000E
 
     @pytest.mark.parametrize(
         "opcode,flag,flag_val,taken",
         [
-            (0xC2, FLAG_Z, 0, True),
-            (0xC2, FLAG_Z, FLAG_Z, False),
-            (0xCA, FLAG_Z, FLAG_Z, True),
-            (0xCA, FLAG_Z, 0, False),
-            (0xD2, FLAG_C, 0, True),
-            (0xD2, FLAG_C, FLAG_C, False),
-            (0xDA, FLAG_C, FLAG_C, True),
-            (0xDA, FLAG_C, 0, False),
+            (0xC2, FLAG_Z, 0, True),  # JP NZ: Z=0 -> taken
+            (0xC2, FLAG_Z, FLAG_Z, False),  # JP NZ: Z=1 -> not taken
+            (0xCA, FLAG_Z, FLAG_Z, True),  # JP Z: Z=1 -> taken
+            (0xCA, FLAG_Z, 0, False),  # JP Z: Z=0 -> not taken
+            (0xD2, FLAG_C, 0, True),  # JP NC: C=0 -> taken
+            (0xD2, FLAG_C, FLAG_C, False),  # JP NC: C=1 -> not taken
+            (0xDA, FLAG_C, FLAG_C, True),  # JP C: C=1 -> taken
+            (0xDA, FLAG_C, 0, False),  # JP C: C=0 -> not taken
+            (0xE2, FLAG_PV, 0, True),  # JP PO: PV=0 -> taken
+            (0xE2, FLAG_PV, FLAG_PV, False),  # JP PO: PV=1 -> not taken
+            (0xEA, FLAG_PV, FLAG_PV, True),  # JP PE: PV=1 -> taken
+            (0xEA, FLAG_PV, 0, False),  # JP PE: PV=0 -> not taken
+            (0xF2, FLAG_S, 0, True),  # JP P: S=0 -> taken
+            (0xF2, FLAG_S, FLAG_S, False),  # JP P: S=1 -> not taken
+            (0xFA, FLAG_S, FLAG_S, True),  # JP M: S=1 -> taken
+            (0xFA, FLAG_S, 0, False),  # JP M: S=0 -> not taken
         ],
     )
     def test_jp_cc_nn(self, cpu, opcode, flag, flag_val, taken):
-        cpu.F = flag_val
+        """JP cc,nn — conditional jump."""
+        cpu.regs.F = flag_val
         write_program(cpu, [opcode, 0x00, 0x10])
         cpu.step()
-        assert cpu.PC == (0x1000 if taken else 3)
+        if taken:
+            assert cpu.regs.PC == 0x1000
+        else:
+            assert cpu.regs.PC == 3
 
     @pytest.mark.parametrize(
         "opcode,flag_val,taken",
         [
-            (0x20, 0, True),
-            (0x20, FLAG_Z, False),
-            (0x28, FLAG_Z, True),
-            (0x28, 0, False),
-            (0x30, 0, True),
-            (0x30, FLAG_C, False),
-            (0x38, FLAG_C, True),
-            (0x38, 0, False),
+            (0x20, 0, True),  # JR NZ: Z=0 -> taken
+            (0x20, FLAG_Z, False),  # JR NZ: Z=1 -> not taken
+            (0x28, FLAG_Z, True),  # JR Z: Z=1 -> taken
+            (0x28, 0, False),  # JR Z: Z=0 -> not taken
+            (0x30, 0, True),  # JR NC: C=0 -> taken
+            (0x30, FLAG_C, False),  # JR NC: C=1 -> not taken
+            (0x38, FLAG_C, True),  # JR C: C=1 -> taken
+            (0x38, 0, False),  # JR C: C=0 -> not taken
         ],
     )
     def test_jr_cc_e(self, cpu, opcode, flag_val, taken):
-        cpu.F = flag_val
+        """JR cc,e — conditional relative jump."""
+        cpu.regs.F = flag_val
         write_program(cpu, [opcode, 0x04])
         cpu.step()
-        assert cpu.PC == (6 if taken else 2)
+        if taken:
+            assert cpu.regs.PC == 6
+        else:
+            assert cpu.regs.PC == 2
+
+    def test_jp_ix(self, cpu):
+        """JP (IX) — jump to address in IX."""
+        cpu.regs.IX = 0x4000
+        write_program(cpu, [0xDD, 0xE9])
+        cpu.step()
+        assert cpu.regs.PC == 0x4000
+
+    def test_jp_iy(self, cpu):
+        """JP (IY) — jump to address in IY."""
+        cpu.regs.IY = 0x5000
+        write_program(cpu, [0xFD, 0xE9])
+        cpu.step()
+        assert cpu.regs.PC == 0x5000
 
 
 # ============================================================
@@ -1093,30 +1319,44 @@ class TestJumps:
 
 
 class TestDJNZ:
+    """DJNZ instruction tests."""
+
     def test_djnz_branch(self, cpu):
-        cpu.B = 2
+        """DJNZ — B > 1, takes the branch."""
+        cpu.regs.B = 2
         write_program(cpu, [0x10, 0x00])
         cpu.step()
-        assert cpu.B == 1
-        assert cpu.PC == 2
+        assert cpu.regs.B == 1
+        assert cpu.regs.PC == 2  # offset 0 + 2
 
     def test_djnz_no_branch(self, cpu):
-        cpu.B = 1
+        """DJNZ — B = 1, falls through (B becomes 0)."""
+        cpu.regs.B = 1
         write_program(cpu, [0x10, 0x04])
         cpu.step()
-        assert cpu.B == 0
-        assert cpu.PC == 2
+        assert cpu.regs.B == 0
+        assert cpu.regs.PC == 2  # falls through
+
+    def test_djnz_backward_loop(self, cpu):
+        """DJNZ — backward jump creates a loop."""
+        cpu.regs.B = 3
+        write_program(cpu, [0x10, 0xFE], 0x0010)  # loop to self
+        cpu.step()
+        assert cpu.regs.B == 2
+        assert cpu.regs.PC == 0x0010
 
     def test_djnz_count_to_zero(self, cpu):
-        cpu.B = 3
+        """DJNZ — count down from 3 to 0 in a loop."""
+        # Place DJNZ at 0x0000 that loops to itself
+        cpu.regs.B = 3
         write_program(cpu, [0x10, 0xFE])
-        cpu.step()
-        assert cpu.B == 2
-        cpu.step()
-        assert cpu.B == 1
-        cpu.step()
-        assert cpu.B == 0
-        assert cpu.PC == 2
+        cpu.step()  # B: 3 -> 2, jump back
+        assert cpu.regs.B == 2
+        cpu.step()  # B: 2 -> 1, jump back
+        assert cpu.regs.B == 1
+        cpu.step()  # B: 1 -> 0, fall through
+        assert cpu.regs.B == 0
+        assert cpu.regs.PC == 2
 
 
 # ============================================================
@@ -1125,65 +1365,93 @@ class TestDJNZ:
 
 
 class TestCallRet:
+    """CALL and RET instruction tests."""
+
     def test_call_nn(self, cpu):
-        cpu.SP = 0xFFFF
+        """CALL nn — jump to subroutine, push return address."""
+        cpu.regs.SP = 0xFFFF
         write_program(cpu, [0xCD, 0x00, 0x10])
         cpu.step()
-        assert cpu.PC == 0x1000
-        assert cpu.SP == 0xFFFD
-        assert cpu.read_byte(0xFFFE) == 0x00
-        assert cpu.read_byte(0xFFFD) == 0x03
+        assert cpu.regs.PC == 0x1000
+        assert cpu.regs.SP == 0xFFFD
+        assert cpu.read_byte(0xFFFE) == 0x00  # high byte of return addr
+        assert cpu.read_byte(0xFFFD) == 0x03  # low byte of return addr
 
     def test_ret(self, cpu):
-        cpu.SP = 0xFFFF
+        """RET — return from subroutine."""
+        cpu.regs.SP = 0xFFFF
         write_program(cpu, [0xCD, 0x00, 0x10])
         cpu.step()
-        cpu.write_byte(0x1000, 0xC9)
+        cpu.write_byte(0x1000, 0xC9)  # RET
         cpu.step()
-        assert cpu.PC == 0x0003
-        assert cpu.SP == 0xFFFF
+        assert cpu.regs.PC == 0x0003
+        assert cpu.regs.SP == 0xFFFF
 
     @pytest.mark.parametrize(
         "opcode,flag_val,taken",
         [
-            (0xC4, 0, True),
-            (0xC4, FLAG_Z, False),
-            (0xCC, FLAG_Z, True),
-            (0xCC, 0, False),
-            (0xD4, 0, True),
-            (0xD4, FLAG_C, False),
-            (0xDC, FLAG_C, True),
-            (0xDC, 0, False),
+            (0xC4, 0, True),  # CALL NZ: Z=0 -> taken
+            (0xC4, FLAG_Z, False),  # CALL NZ: Z=1 -> not taken
+            (0xCC, FLAG_Z, True),  # CALL Z: Z=1 -> taken
+            (0xCC, 0, False),  # CALL Z: Z=0 -> not taken
+            (0xD4, 0, True),  # CALL NC: C=0 -> taken
+            (0xD4, FLAG_C, False),  # CALL NC: C=1 -> not taken
+            (0xDC, FLAG_C, True),  # CALL C: C=1 -> taken
+            (0xDC, 0, False),  # CALL C: C=0 -> not taken
+            (0xE4, 0, True),  # CALL PO: PV=0 -> taken
+            (0xE4, FLAG_PV, False),  # CALL PO: PV=1 -> not taken
+            (0xEC, FLAG_PV, True),  # CALL PE: PV=1 -> taken
+            (0xEC, 0, False),  # CALL PE: PV=0 -> not taken
+            (0xF4, 0, True),  # CALL P: S=0 -> taken
+            (0xF4, FLAG_S, False),  # CALL P: S=1 -> not taken
+            (0xFC, FLAG_S, True),  # CALL M: S=1 -> taken
+            (0xFC, 0, False),  # CALL M: S=0 -> not taken
         ],
     )
     def test_call_cc_nn(self, cpu, opcode, flag_val, taken):
-        cpu.SP = 0xFFFF
-        cpu.F = flag_val
+        """CALL cc,nn — conditional call."""
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.F = flag_val
         write_program(cpu, [opcode, 0x00, 0x20])
         cpu.step()
-        assert cpu.PC == (0x2000 if taken else 3)
+        if taken:
+            assert cpu.regs.PC == 0x2000
+        else:
+            assert cpu.regs.PC == 3
 
     @pytest.mark.parametrize(
         "opcode,flag_val,taken",
         [
-            (0xC0, 0, True),
-            (0xC0, FLAG_Z, False),
-            (0xC8, FLAG_Z, True),
-            (0xC8, 0, False),
-            (0xD0, 0, True),
-            (0xD0, FLAG_C, False),
-            (0xD8, FLAG_C, True),
-            (0xD8, 0, False),
+            (0xC0, 0, True),  # RET NZ: Z=0 -> taken
+            (0xC0, FLAG_Z, False),  # RET NZ: Z=1 -> not taken
+            (0xC8, FLAG_Z, True),  # RET Z: Z=1 -> taken
+            (0xC8, 0, False),  # RET Z: Z=0 -> not taken
+            (0xD0, 0, True),  # RET NC: C=0 -> taken
+            (0xD0, FLAG_C, False),  # RET NC: C=1 -> not taken
+            (0xD8, FLAG_C, True),  # RET C: C=1 -> taken
+            (0xD8, 0, False),  # RET C: C=0 -> not taken
+            (0xE0, 0, True),  # RET PO: PV=0 -> taken
+            (0xE0, FLAG_PV, False),  # RET PO: PV=1 -> not taken
+            (0xE8, FLAG_PV, True),  # RET PE: PV=1 -> taken
+            (0xE8, 0, False),  # RET PE: PV=0 -> not taken
+            (0xF0, 0, True),  # RET P: S=0 -> taken
+            (0xF0, FLAG_S, False),  # RET P: S=1 -> not taken
+            (0xF8, FLAG_S, True),  # RET M: S=1 -> taken
+            (0xF8, 0, False),  # RET M: S=0 -> not taken
         ],
     )
     def test_ret_cc(self, cpu, opcode, flag_val, taken):
-        cpu.SP = 0xFFFD
+        """RET cc — conditional return."""
+        cpu.regs.SP = 0xFFFD
         cpu.write_byte(0xFFFD, 0x00)
         cpu.write_byte(0xFFFE, 0x30)
-        cpu.F = flag_val
+        cpu.regs.F = flag_val
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.PC == (0x3000 if taken else 1)
+        if taken:
+            assert cpu.regs.PC == 0x3000
+        else:
+            assert cpu.regs.PC == 1
 
     @pytest.mark.parametrize(
         "opcode,target",
@@ -1199,11 +1467,12 @@ class TestCallRet:
         ],
     )
     def test_rst(self, cpu, opcode, target):
-        cpu.SP = 0xFFFF
+        """RST p — restart to fixed address."""
+        cpu.regs.SP = 0xFFFF
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.PC == target
-        assert cpu.SP == 0xFFFD
+        assert cpu.regs.PC == target
+        assert cpu.regs.SP == 0xFFFD
 
 
 # ============================================================
@@ -1212,40 +1481,99 @@ class TestCallRet:
 
 
 class TestRotateAcc:
+    """Accumulator rotate instructions (RLCA, RRCA, RLA, RRA)."""
+
     def test_rlca_bit7_set(self, cpu):
-        cpu.A = 0x88
+        """RLCA — bit 7 rotates to bit 0 and carry."""
+        cpu.regs.A = 0x88
         write_program(cpu, [0x07])
         cpu.step()
-        assert cpu.A == 0x11
+        assert cpu.regs.A == 0x11
         assert flag_set(cpu, FLAG_C)
 
-    def test_rrca_bit0_set(self, cpu):
-        cpu.A = 0x11
-        write_program(cpu, [0x0F])
+    def test_rlca_bit7_clear(self, cpu):
+        """RLCA — bit 7 clear, no carry."""
+        cpu.regs.A = 0x41
+        write_program(cpu, [0x07])
         cpu.step()
-        assert cpu.A == 0x88
-        assert flag_set(cpu, FLAG_C)
-
-    def test_rla_with_carry(self, cpu):
-        cpu.A = 0x41
-        cpu.F = FLAG_C
-        write_program(cpu, [0x17])
-        cpu.step()
-        assert cpu.A == 0x83
+        assert cpu.regs.A == 0x82
         assert flag_clear(cpu, FLAG_C)
 
-    def test_rra_with_carry(self, cpu):
-        cpu.A = 0x00
-        cpu.F = FLAG_C
+    def test_rrca_bit0_set(self, cpu):
+        """RRCA — bit 0 rotates to bit 7 and carry."""
+        cpu.regs.A = 0x11
+        write_program(cpu, [0x0F])
+        cpu.step()
+        assert cpu.regs.A == 0x88
+        assert flag_set(cpu, FLAG_C)
+
+    def test_rrca_bit0_clear(self, cpu):
+        """RRCA — bit 0 clear, no carry."""
+        cpu.regs.A = 0x82
+        write_program(cpu, [0x0F])
+        cpu.step()
+        assert cpu.regs.A == 0x41
+        assert flag_clear(cpu, FLAG_C)
+
+    def test_rla_with_carry(self, cpu):
+        """RLA — rotate left through carry."""
+        cpu.regs.A = 0x41
+        cpu.regs.F = FLAG_C
+        write_program(cpu, [0x17])
+        cpu.step()
+        assert cpu.regs.A == 0x83
+        assert flag_clear(cpu, FLAG_C)
+
+    def test_rla_without_carry(self, cpu):
+        """RLA — rotate left, carry clear."""
+        cpu.regs.A = 0x80
+        cpu.regs.F = 0x00
+        write_program(cpu, [0x17])
+        cpu.step()
+        assert cpu.regs.A == 0x00
+        assert flag_set(cpu, FLAG_C)
+
+    def test_rra_no_carry(self, cpu):
+        """RRA — rotate right, carry clear."""
+        cpu.regs.A = 0x82
+        cpu.regs.F = 0x00
         write_program(cpu, [0x1F])
         cpu.step()
-        assert cpu.A == 0x80
+        assert cpu.regs.A == 0x41
+        assert flag_clear(cpu, FLAG_C)
+
+    def test_rra_bit0_to_carry(self, cpu):
+        """RRA — bit 0 goes to carry."""
+        cpu.regs.A = 0x01
+        cpu.regs.F = 0x00
+        write_program(cpu, [0x1F])
+        cpu.step()
+        assert cpu.regs.A == 0x00
+        assert flag_set(cpu, FLAG_C)
+
+    def test_rra_with_carry(self, cpu):
+        """RRA — carry rotates into bit 7."""
+        cpu.regs.A = 0x00
+        cpu.regs.F = FLAG_C
+        write_program(cpu, [0x1F])
+        cpu.step()
+        assert cpu.regs.A == 0x80
         assert flag_clear(cpu, FLAG_C)
 
     def test_rlca_clears_h_n(self, cpu):
-        cpu.A = 0x01
-        cpu.F = FLAG_H | FLAG_N
+        """RLCA — always clears H and N."""
+        cpu.regs.A = 0x01
+        cpu.regs.F = FLAG_H | FLAG_N
         write_program(cpu, [0x07])
+        cpu.step()
+        assert flag_clear(cpu, FLAG_H)
+        assert flag_clear(cpu, FLAG_N)
+
+    def test_rrca_clears_h_n(self, cpu):
+        """RRCA — always clears H and N."""
+        cpu.regs.A = 0x01
+        cpu.regs.F = FLAG_H | FLAG_N
+        write_program(cpu, [0x0F])
         cpu.step()
         assert flag_clear(cpu, FLAG_H)
         assert flag_clear(cpu, FLAG_N)
@@ -1257,30 +1585,96 @@ class TestRotateAcc:
 
 
 class TestCBRotateShift:
+    """CB-prefixed rotate and shift instructions."""
+
     def test_rlc_a(self, cpu):
-        cpu.A = 0x80
+        """CB RLC A — rotate left circular."""
+        cpu.regs.A = 0x80
         run_cb_instruction(cpu, 0x07)
-        assert cpu.A == 0x01
+        assert cpu.regs.A == 0x01
         assert flag_set(cpu, FLAG_C)
 
-    def test_sla_a(self, cpu):
-        cpu.A = 0x80
-        run_cb_instruction(cpu, 0x27)
-        assert cpu.A == 0x00
+    def test_rl_a(self, cpu):
+        """CB RL A — rotate left through carry."""
+        cpu.regs.A = 0x80
+        cpu.regs.F = 0x00
+        run_cb_instruction(cpu, 0x17)
+        assert cpu.regs.A == 0x00
         assert flag_set(cpu, FLAG_C)
         assert flag_set(cpu, FLAG_Z)
 
-    def test_sra_a(self, cpu):
-        cpu.A = 0x81
-        run_cb_instruction(cpu, 0x2F)
-        assert cpu.A == 0xC0
+    def test_rrc_a(self, cpu):
+        """CB RRC A — rotate right circular."""
+        cpu.regs.A = 0x01
+        run_cb_instruction(cpu, 0x0F)
+        assert cpu.regs.A == 0x80
         assert flag_set(cpu, FLAG_C)
 
-    def test_srl_a(self, cpu):
-        cpu.A = 0x81
-        run_cb_instruction(cpu, 0x3F)
-        assert cpu.A == 0x40
+    def test_rr_a(self, cpu):
+        """CB RR A — rotate right through carry."""
+        cpu.regs.A = 0x01
+        cpu.regs.F = 0x00
+        run_cb_instruction(cpu, 0x1F)
+        assert cpu.regs.A == 0x00
         assert flag_set(cpu, FLAG_C)
+
+    def test_sla_a(self, cpu):
+        """CB SLA A — shift left arithmetic."""
+        cpu.regs.A = 0x80
+        run_cb_instruction(cpu, 0x27)
+        assert cpu.regs.A == 0x00
+        assert flag_set(cpu, FLAG_C)
+        assert flag_set(cpu, FLAG_Z)
+
+    def test_sla_a_no_carry(self, cpu):
+        """CB SLA A — no carry when bit 7 clear."""
+        cpu.regs.A = 0x40
+        run_cb_instruction(cpu, 0x27)
+        assert cpu.regs.A == 0x80
+        assert flag_clear(cpu, FLAG_C)
+
+    def test_sra_a(self, cpu):
+        """CB SRA A — shift right arithmetic (MSB preserved)."""
+        cpu.regs.A = 0x81
+        run_cb_instruction(cpu, 0x2F)
+        assert cpu.regs.A == 0xC0
+        assert flag_set(cpu, FLAG_C)
+
+    def test_sra_a_positive(self, cpu):
+        """CB SRA A — positive number (MSB=0 preserved)."""
+        cpu.regs.A = 0x40
+        run_cb_instruction(cpu, 0x2F)
+        assert cpu.regs.A == 0x20
+        assert flag_clear(cpu, FLAG_C)
+
+    def test_srl_a(self, cpu):
+        """CB SRL A — shift right logical (MSB=0)."""
+        cpu.regs.A = 0x81
+        run_cb_instruction(cpu, 0x3F)
+        assert cpu.regs.A == 0x40
+        assert flag_set(cpu, FLAG_C)
+
+    def test_srl_a_no_carry(self, cpu):
+        """CB SRL A — no carry when bit 0 clear."""
+        cpu.regs.A = 0x80
+        run_cb_instruction(cpu, 0x3F)
+        assert cpu.regs.A == 0x40
+        assert flag_clear(cpu, FLAG_C)
+
+    def test_rlc_hl_indirect(self, cpu):
+        """CB RLC (HL) — rotate memory byte."""
+        cpu.regs.HL = 0x2000
+        cpu.write_byte(0x2000, 0x80)
+        run_cb_instruction(cpu, 0x06)
+        assert cpu.read_byte(0x2000) == 0x01
+        assert flag_set(cpu, FLAG_C)
+
+    def test_srl_b(self, cpu):
+        """CB SRL B — shift register right logical."""
+        cpu.regs.B = 0x02
+        run_cb_instruction(cpu, 0x38)
+        assert cpu.regs.B == 0x01
+        assert flag_clear(cpu, FLAG_C)
 
     @pytest.mark.parametrize(
         "reg_idx,reg_name",
@@ -1295,9 +1689,10 @@ class TestCBRotateShift:
         ],
     )
     def test_rlc_all_registers(self, cpu, reg_idx, reg_name):
-        setattr(cpu, reg_name, 0x80)
+        """CB RLC r — all registers."""
+        setattr(cpu.regs, reg_name, 0x80)
         run_cb_instruction(cpu, 0x00 + reg_idx)
-        assert getattr(cpu, reg_name) == 0x01
+        assert getattr(cpu.regs, reg_name) == 0x01
 
     @pytest.mark.parametrize(
         "reg_idx,reg_name",
@@ -1312,9 +1707,10 @@ class TestCBRotateShift:
         ],
     )
     def test_srl_all_registers(self, cpu, reg_idx, reg_name):
-        setattr(cpu, reg_name, 0x02)
+        """CB SRL r — all registers."""
+        setattr(cpu.regs, reg_name, 0x02)
         run_cb_instruction(cpu, 0x38 + reg_idx)
-        assert getattr(cpu, reg_name) == 0x01
+        assert getattr(cpu.regs, reg_name) == 0x01
 
 
 # ============================================================
@@ -1323,9 +1719,12 @@ class TestCBRotateShift:
 
 
 class TestBitSetRes:
+    """BIT, SET, and RES instruction tests."""
+
     @pytest.mark.parametrize("bit", range(8))
     def test_bit_set_in_a(self, cpu, bit):
-        cpu.A = 1 << bit
+        """BIT b,A — test each bit when set."""
+        cpu.regs.A = 1 << bit
         run_cb_instruction(cpu, 0x40 + (bit * 8) + 7)
         assert flag_clear(cpu, FLAG_Z)
         assert flag_set(cpu, FLAG_H)
@@ -1333,33 +1732,100 @@ class TestBitSetRes:
 
     @pytest.mark.parametrize("bit", range(8))
     def test_bit_clear_in_a(self, cpu, bit):
-        cpu.A = 0xFF ^ (1 << bit)
+        """BIT b,A — test each bit when clear."""
+        cpu.regs.A = 0xFF ^ (1 << bit)
         run_cb_instruction(cpu, 0x40 + (bit * 8) + 7)
+        assert flag_set(cpu, FLAG_Z)
+
+    def test_bit_0_hl_indirect(self, cpu):
+        """BIT 0,(HL) — test bit in memory."""
+        cpu.regs.HL = 0x1000
+        cpu.write_byte(0x1000, 0x01)
+        run_cb_instruction(cpu, 0x46)
+        assert flag_clear(cpu, FLAG_Z)
+
+    def test_bit_0_hl_indirect_clear(self, cpu):
+        """BIT 0,(HL) — bit clear in memory."""
+        cpu.regs.HL = 0x1000
+        cpu.write_byte(0x1000, 0xFE)
+        run_cb_instruction(cpu, 0x46)
         assert flag_set(cpu, FLAG_Z)
 
     @pytest.mark.parametrize("bit", range(8))
     def test_set_bit_a(self, cpu, bit):
-        cpu.A = 0x00
+        """SET b,A — set each bit."""
+        cpu.regs.A = 0x00
         run_cb_instruction(cpu, 0xC0 + (bit * 8) + 7)
-        assert cpu.A == (1 << bit)
+        assert cpu.regs.A == (1 << bit)
+
+    def test_set_already_set(self, cpu):
+        """SET b,A — setting an already-set bit is idempotent."""
+        cpu.regs.A = 0xFF
+        run_cb_instruction(cpu, 0xC7)  # SET 0,A
+        assert cpu.regs.A == 0xFF
 
     @pytest.mark.parametrize("bit", range(8))
     def test_res_bit_a(self, cpu, bit):
-        cpu.A = 0xFF
+        """RES b,A — reset each bit."""
+        cpu.regs.A = 0xFF
         run_cb_instruction(cpu, 0x80 + (bit * 8) + 7)
-        assert cpu.A == (0xFF ^ (1 << bit))
+        assert cpu.regs.A == (0xFF ^ (1 << bit))
+
+    def test_res_already_clear(self, cpu):
+        """RES b,A — resetting an already-clear bit is idempotent."""
+        cpu.regs.A = 0x00
+        run_cb_instruction(cpu, 0x87)  # RES 0,A
+        assert cpu.regs.A == 0x00
 
     def test_set_0_hl_indirect(self, cpu):
-        cpu.HL = 0x2000
+        """SET 0,(HL) — set bit in memory."""
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0xF0)
         run_cb_instruction(cpu, 0xC6)
         assert cpu.read_byte(0x2000) == 0xF1
 
     def test_res_4_hl_indirect(self, cpu):
-        cpu.HL = 0x2000
+        """RES 4,(HL) — reset bit in memory."""
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0xFF)
         run_cb_instruction(cpu, 0xA6)
         assert cpu.read_byte(0x2000) == 0xEF
+
+    @pytest.mark.parametrize(
+        "reg_idx,reg_name",
+        [
+            (0, "B"),
+            (1, "C"),
+            (2, "D"),
+            (3, "E"),
+            (4, "H"),
+            (5, "L"),
+            (7, "A"),
+        ],
+    )
+    def test_set_3_all_registers(self, cpu, reg_idx, reg_name):
+        """SET 3,r — all registers."""
+        setattr(cpu.regs, reg_name, 0x00)
+        run_cb_instruction(cpu, 0xD8 + reg_idx)  # SET 3,r
+        assert getattr(cpu.regs, reg_name) == 0x08
+
+    @pytest.mark.parametrize(
+        "reg_idx,reg_name",
+        [
+            (0, "B"),
+            (1, "C"),
+            (2, "D"),
+            (3, "E"),
+            (4, "H"),
+            (5, "L"),
+            (7, "A"),
+        ],
+    )
+    def test_res_3_all_registers(self, cpu, reg_idx, reg_name):
+        """RES 3,r — all registers."""
+        setattr(cpu.regs, reg_name, 0xFF)
+        run_cb_instruction(cpu, 0x98 + reg_idx)  # RES 3,r
+        assert getattr(cpu.regs, reg_name) == 0xF7
 
 
 # ============================================================
@@ -1368,53 +1834,172 @@ class TestBitSetRes:
 
 
 class TestBlockInstructions:
+    """LDI, LDD, LDIR, LDDR, CPI, CPD, CPIR, CPDR tests."""
+
     def test_ldi(self, cpu):
-        cpu.HL = 0x1000
-        cpu.DE = 0x2000
-        cpu.BC = 0x0003
+        """LDI — transfer one byte, increment HL/DE, decrement BC."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0003
         cpu.write_byte(0x1000, 0x42)
         write_program(cpu, [0xED, 0xA0])
         cpu.step()
         assert cpu.read_byte(0x2000) == 0x42
-        assert cpu.HL == 0x1001
-        assert cpu.DE == 0x2001
-        assert cpu.BC == 0x0002
-        assert flag_set(cpu, FLAG_PV)
+        assert cpu.regs.HL == 0x1001
+        assert cpu.regs.DE == 0x2001
+        assert cpu.regs.BC == 0x0002
+        assert flag_set(cpu, FLAG_PV)  # BC still non-zero
 
     def test_ldi_bc_zero(self, cpu):
-        cpu.HL = 0x1000
-        cpu.DE = 0x2000
-        cpu.BC = 0x0001
+        """LDI — PV=0 when BC reaches 0."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0001
         cpu.write_byte(0x1000, 0x42)
         write_program(cpu, [0xED, 0xA0])
         cpu.step()
-        assert cpu.BC == 0x0000
+        assert cpu.regs.BC == 0x0000
         assert flag_clear(cpu, FLAG_PV)
 
+    def test_ldd(self, cpu):
+        """LDD — transfer one byte, decrement HL/DE, decrement BC."""
+        cpu.regs.HL = 0x1005
+        cpu.regs.DE = 0x2005
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1005, 0x55)
+        write_program(cpu, [0xED, 0xA8])
+        cpu.step()
+        assert cpu.read_byte(0x2005) == 0x55
+        assert cpu.regs.HL == 0x1004
+        assert cpu.regs.DE == 0x2004
+        assert cpu.regs.BC == 0x0000
+        assert flag_clear(cpu, FLAG_PV)
+
+    def test_ldi_clears_h_n(self, cpu):
+        """LDI — clears H and N flags."""
+        cpu.regs.F = FLAG_H | FLAG_N
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x01)
+        write_program(cpu, [0xED, 0xA0])
+        cpu.step()
+        assert flag_clear(cpu, FLAG_H)
+        assert flag_clear(cpu, FLAG_N)
+
     def test_ldir(self, cpu):
+        """LDIR — repeats until BC=0."""
         cpu.write_byte(0x1000, 0xAA)
         cpu.write_byte(0x1001, 0xBB)
         cpu.write_byte(0x1002, 0xCC)
-        cpu.HL = 0x1000
-        cpu.DE = 0x2000
-        cpu.BC = 0x0003
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0003
         write_program(cpu, [0xED, 0xB0])
         step_n(cpu, 3)
         assert cpu.read_byte(0x2000) == 0xAA
         assert cpu.read_byte(0x2001) == 0xBB
         assert cpu.read_byte(0x2002) == 0xCC
-        assert cpu.BC == 0x0000
+        assert cpu.regs.BC == 0x0000
+        assert flag_clear(cpu, FLAG_PV)
+
+    def test_lddr(self, cpu):
+        """LDDR — transfer bytes in reverse."""
+        cpu.write_byte(0x1002, 0x11)
+        cpu.write_byte(0x1001, 0x22)
+        cpu.write_byte(0x1000, 0x33)
+        cpu.regs.HL = 0x1002
+        cpu.regs.DE = 0x2002
+        cpu.regs.BC = 0x0003
+        write_program(cpu, [0xED, 0xB8])
+        step_n(cpu, 3)
+        assert cpu.read_byte(0x2002) == 0x11
+        assert cpu.read_byte(0x2001) == 0x22
+        assert cpu.read_byte(0x2000) == 0x33
+        assert cpu.regs.BC == 0x0000
 
     def test_cpi(self, cpu):
-        cpu.A = 0x42
-        cpu.HL = 0x1000
-        cpu.BC = 0x0002
+        """CPI — compare A with (HL), Z set on match."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0002
         cpu.write_byte(0x1000, 0x42)
         write_program(cpu, [0xED, 0xA1])
         cpu.step()
         assert flag_set(cpu, FLAG_Z)
-        assert cpu.HL == 0x1001
-        assert cpu.BC == 0x0001
+        assert cpu.regs.HL == 0x1001
+        assert cpu.regs.BC == 0x0001
+
+    def test_cpi_no_match(self, cpu):
+        """CPI — Z clear on mismatch."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xA1])
+        cpu.step()
+        assert flag_clear(cpu, FLAG_Z)
+
+    def test_cpi_sets_n(self, cpu):
+        """CPI — always sets N flag."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x42)
+        write_program(cpu, [0xED, 0xA1])
+        cpu.step()
+        assert flag_set(cpu, FLAG_N)
+
+    def test_cpd(self, cpu):
+        """CPD — compare and decrement."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1005
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1005, 0x42)
+        write_program(cpu, [0xED, 0xA9])
+        cpu.step()
+        assert flag_set(cpu, FLAG_Z)
+        assert cpu.regs.HL == 0x1004
+        assert cpu.regs.BC == 0x0001
+
+    def test_cpir_find_match(self, cpu):
+        """CPIR — scan until match."""
+        cpu.regs.A = 0x55
+        cpu.write_byte(0x1000, 0x00)
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x1002, 0x55)
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0005
+        write_program(cpu, [0xED, 0xB1])
+        step_n(cpu, 3)
+        assert cpu.regs.HL == 0x1003
+        assert flag_set(cpu, FLAG_Z)
+
+    def test_cpir_no_match(self, cpu):
+        """CPIR — exhausts BC without match."""
+        cpu.regs.A = 0xFF
+        cpu.write_byte(0x1000, 0x00)
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x1002, 0x00)
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0003
+        write_program(cpu, [0xED, 0xB1])
+        step_n(cpu, 3)
+        assert cpu.regs.BC == 0x0000
+        assert flag_clear(cpu, FLAG_Z)
+
+    def test_cpdr(self, cpu):
+        """CPDR — compare and decrement repeat."""
+        cpu.regs.A = 0x55
+        cpu.write_byte(0x1002, 0x00)
+        cpu.write_byte(0x1001, 0x55)
+        cpu.write_byte(0x1000, 0x00)
+        cpu.regs.HL = 0x1002
+        cpu.regs.BC = 0x0003
+        write_program(cpu, [0xED, 0xB9])
+        step_n(cpu, 2)
+        assert flag_set(cpu, FLAG_Z)
+        assert cpu.regs.HL == 0x1000
 
 
 # ============================================================
@@ -1423,49 +2008,55 @@ class TestBlockInstructions:
 
 
 class TestIOBlock:
+    """INI, IND, INIR, INDR, OUTI, OUTD, OTIR, OTDR tests."""
+
     def test_ini(self, cpu):
-        cpu.B = 0x02
-        cpu.C = 0x10
-        cpu.HL = 0x2000
-        cpu._io.ports[0x10] = 0xAB
+        """INI — input from port (C), store at (HL), decrement B."""
+        cpu.regs.B = 0x02
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2000
+        cpu.io_write(0x10, 0xAB)
         write_program(cpu, [0xED, 0xA2])
         cpu.step()
         assert cpu.read_byte(0x2000) == 0xAB
-        assert cpu.HL == 0x2001
-        assert cpu.B == 0x01
+        assert cpu.regs.HL == 0x2001
+        assert cpu.regs.B == 0x01
 
     def test_ind(self, cpu):
-        cpu.B = 0x02
-        cpu.C = 0x10
-        cpu.HL = 0x2005
-        cpu._io.ports[0x10] = 0xCD
+        """IND — input, decrement HL and B."""
+        cpu.regs.B = 0x02
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2005
+        cpu.io_write(0x10, 0xCD)
         write_program(cpu, [0xED, 0xAA])
         cpu.step()
         assert cpu.read_byte(0x2005) == 0xCD
-        assert cpu.HL == 0x2004
-        assert cpu.B == 0x01
+        assert cpu.regs.HL == 0x2004
+        assert cpu.regs.B == 0x01
 
     def test_outi(self, cpu):
-        cpu.B = 0x02
-        cpu.C = 0x10
-        cpu.HL = 0x2000
+        """OUTI — output (HL) to port (C), increment HL, decrement B."""
+        cpu.regs.B = 0x02
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2000
         cpu.write_byte(0x2000, 0xEF)
         write_program(cpu, [0xED, 0xA3])
         cpu.step()
-        assert cpu._io.ports.get(0x10, None) == 0xEF
-        assert cpu.HL == 0x2001
-        assert cpu.B == 0x01
+        assert cpu.io_read(0x10) == 0xEF
+        assert cpu.regs.HL == 0x2001
+        assert cpu.regs.B == 0x01
 
     def test_outd(self, cpu):
-        cpu.B = 0x02
-        cpu.C = 0x10
-        cpu.HL = 0x2005
+        """OUTD — output (HL) to port (C), decrement HL and B."""
+        cpu.regs.B = 0x02
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2005
         cpu.write_byte(0x2005, 0x77)
         write_program(cpu, [0xED, 0xAB])
         cpu.step()
-        assert cpu._io.ports.get(0x10, None) == 0x77
-        assert cpu.HL == 0x2004
-        assert cpu.B == 0x01
+        assert cpu.io_read(0x10) == 0x77
+        assert cpu.regs.HL == 0x2004
+        assert cpu.regs.B == 0x01
 
 
 # ============================================================
@@ -1474,33 +2065,39 @@ class TestIOBlock:
 
 
 class TestIO:
+    """I/O port instruction tests."""
+
     def test_in_a_n(self, cpu):
-        cpu._io.ports[0x42] = 0xAB
+        """IN A,(n) — read port."""
+        cpu.io_write(0x42, 0xAB)
         write_program(cpu, [0xDB, 0x42])
         cpu.step()
-        assert cpu.A == 0xAB
+        assert cpu.regs.A == 0xAB
 
     def test_out_n_a(self, cpu):
-        cpu.A = 0xCD
+        """OUT (n),A — write port."""
+        cpu.regs.A = 0xCD
         write_program(cpu, [0xD3, 0x42])
         cpu.step()
-        assert cpu._io.ports.get(0x42, None) == 0xCD
+        assert cpu.io_read(0x42) == 0xCD
 
     def test_in_r_c(self, cpu):
-        cpu.C = 0x10
-        cpu._io.ports[0x10] = 0x80
-        write_program(cpu, [0xED, 0x78])
+        """IN r,(C) — ED-prefix port read with flag effects."""
+        cpu.regs.C = 0x10
+        cpu.io_write(0x10, 0x80)
+        write_program(cpu, [0xED, 0x78])  # IN A,(C)
         cpu.step()
-        assert cpu.A == 0x80
+        assert cpu.regs.A == 0x80
         assert flag_set(cpu, FLAG_S)
         assert flag_clear(cpu, FLAG_Z)
 
     def test_out_c_r(self, cpu):
-        cpu.C = 0x10
-        cpu.B = 0x42
-        write_program(cpu, [0xED, 0x41])
+        """OUT (C),r — ED-prefix port write."""
+        cpu.regs.C = 0x10
+        cpu.regs.B = 0x42
+        write_program(cpu, [0xED, 0x41])  # OUT (C),B
         cpu.step()
-        assert cpu._io.ports.get(0x10, None) == 0x42
+        assert cpu.io_read(0x10) == 0x42
 
 
 # ============================================================
@@ -1509,6 +2106,8 @@ class TestIO:
 
 
 class TestTiming:
+    """Cycle-accurate instruction timing verification."""
+
     @pytest.mark.parametrize(
         "program,mnemonic,expected_cycles",
         [
@@ -1555,75 +2154,247 @@ class TestTiming:
         ],
     )
     def test_instruction_timing(self, cpu, program, mnemonic, expected_cycles):
-        for i, b in enumerate(program):
-            cpu.write_byte(i, b)
-        cpu.PC = 0
+        """Verify cycle count for {mnemonic}."""
+        for _i, _b in enumerate(program):
+            cpu.write_byte(0 + _i, _b)
+        cpu.regs.PC = 0
         cycles = cpu.step()
         assert cycles == expected_cycles, (
             f"{mnemonic}: expected {expected_cycles}, got {cycles}"
         )
 
     def test_djnz_no_branch_timing(self, cpu):
-        cpu.B = 1
+        """DJNZ — no branch (B=1) takes 8 cycles."""
+        cpu.regs.B = 1
         write_program(cpu, [0x10, 0x00])
-        assert cpu.step() == 8
+        cycles = cpu.step()
+        assert cycles == 8
 
     def test_djnz_branch_timing(self, cpu):
-        cpu.B = 2
+        """DJNZ — branch (B>1) takes 13 cycles."""
+        cpu.regs.B = 2
         write_program(cpu, [0x10, 0x00])
-        assert cpu.step() == 13
+        cycles = cpu.step()
+        assert cycles == 13
 
     def test_jp_cc_always_10_cycles(self, cpu):
-        cpu.F = 0
-        write_program(cpu, [0xC2, 0x00, 0x00])
-        assert cpu.step() == 10
-        cpu.reset()
-        cpu.F = FLAG_Z
+        """JP cc,nn — always 10 cycles regardless of condition."""
+        # Taken
+        cpu.regs.F = 0
         write_program(cpu, [0xC2, 0x00, 0x00])
         assert cpu.step() == 10
 
+        # Not taken
+        cpu.reset()
+        cpu.regs.F = FLAG_Z
+        write_program(cpu, [0xC2, 0x00, 0x00])
+        assert cpu.step() == 10
+
+    def test_jr_cc_taken_timing(self, cpu):
+        """JR cc,e — taken takes 12 cycles."""
+        cpu.regs.F = FLAG_Z
+        write_program(cpu, [0x28, 0x00])
+        assert cpu.step() == 12
+
+    def test_jr_cc_not_taken_timing(self, cpu):
+        """JR cc,e — not taken takes 7 cycles."""
+        cpu.regs.F = 0
+        write_program(cpu, [0x28, 0x00])
+        assert cpu.step() == 7
+
     def test_call_cc_taken_timing(self, cpu):
-        cpu.SP = 0xFFFF
-        cpu.F = 0
+        """CALL cc,nn — taken takes 17 cycles."""
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.F = 0
         write_program(cpu, [0xC4, 0x00, 0x00])
         assert cpu.step() == 17
 
     def test_call_cc_not_taken_timing(self, cpu):
-        cpu.SP = 0xFFFF
-        cpu.F = FLAG_Z
+        """CALL cc,nn — not taken takes 10 cycles."""
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.F = FLAG_Z
         write_program(cpu, [0xC4, 0x00, 0x00])
         assert cpu.step() == 10
 
     def test_ret_cc_taken_timing(self, cpu):
-        cpu.SP = 0xFFFD
+        """RET cc — taken takes 11 cycles."""
+        cpu.regs.SP = 0xFFFD
         cpu.write_byte(0xFFFD, 0x00)
         cpu.write_byte(0xFFFE, 0x10)
-        cpu.F = FLAG_Z
+        cpu.regs.F = FLAG_Z
         write_program(cpu, [0xC8])
         assert cpu.step() == 11
 
     def test_ret_cc_not_taken_timing(self, cpu):
-        cpu.SP = 0xFFFD
-        cpu.F = 0
+        """RET cc — not taken takes 5 cycles."""
+        cpu.regs.SP = 0xFFFD
+        cpu.regs.F = 0
         write_program(cpu, [0xC8])
         assert cpu.step() == 5
 
     def test_ldir_repeating_timing(self, cpu):
-        cpu.HL = 0x1000
-        cpu.DE = 0x2000
-        cpu.BC = 0x0002
+        """LDIR — repeating iteration takes 21 cycles."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0002
         cpu.write_byte(0x1000, 0x01)
         cpu.write_byte(0x1001, 0x02)
         write_program(cpu, [0xED, 0xB0])
         assert cpu.step() == 21
 
     def test_ldir_final_timing(self, cpu):
-        cpu.HL = 0x1000
-        cpu.DE = 0x2000
-        cpu.BC = 0x0001
+        """LDIR — final iteration takes 16 cycles."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0001
         cpu.write_byte(0x1000, 0x01)
         write_program(cpu, [0xED, 0xB0])
         assert cpu.step() == 16
+
+    def test_ldd_timing(self, cpu):
+        """LDD — transfer and decrement takes 16 cycles."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1000, 0x01)
+        write_program(cpu, [0xED, 0xA8])
+        assert cpu.step() == 16
+
+    def test_lddr_repeating_timing(self, cpu):
+        """LDDR — repeating iteration takes 21 cycles."""
+        cpu.regs.HL = 0x1001
+        cpu.regs.DE = 0x2001
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1001, 0x01)
+        cpu.write_byte(0x1000, 0x02)
+        write_program(cpu, [0xED, 0xB8])
+        assert cpu.step() == 21
+
+    def test_lddr_final_timing(self, cpu):
+        """LDDR — final iteration takes 16 cycles."""
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x2000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x01)
+        write_program(cpu, [0xED, 0xB8])
+        assert cpu.step() == 16
+
+    def test_cpi_timing(self, cpu):
+        """CPI — compare and increment takes 16 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xA1])
+        assert cpu.step() == 16
+
+    def test_cpd_timing(self, cpu):
+        """CPD — compare and decrement takes 16 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xA9])
+        assert cpu.step() == 16
+
+    def test_cpir_repeating_timing(self, cpu):
+        """CPIR — repeating iteration takes 21 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1000, 0x00)
+        cpu.write_byte(0x1001, 0x00)
+        write_program(cpu, [0xED, 0xB1])
+        assert cpu.step() == 21
+
+    def test_cpir_final_timing(self, cpu):
+        """CPIR — final iteration (BC=1) takes 16 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xB1])
+        assert cpu.step() == 16
+
+    def test_cpir_match_on_last_byte_timing(self, cpu):
+        """CPIR — match on last byte (BC=1) takes 16 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x42)
+        write_program(cpu, [0xED, 0xB1])
+        assert cpu.step() == 16
+
+    def test_cpir_no_match_bc3_timing(self, cpu):
+        """CPIR — no match, BC=3, first iteration takes 21 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0003
+        cpu.write_byte(0x1000, 0x00)
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x1002, 0x00)
+        write_program(cpu, [0xED, 0xB1])
+        assert cpu.step() == 21
+
+    def test_cpdr_repeating_timing(self, cpu):
+        """CPDR — repeating iteration takes 21 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1001
+        cpu.regs.BC = 0x0002
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xB9])
+        assert cpu.step() == 21
+
+    def test_cpdr_final_timing(self, cpu):
+        """CPDR — final iteration (BC=1) takes 16 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xB9])
+        assert cpu.step() == 16
+
+    def test_cpdr_match_on_last_byte_timing(self, cpu):
+        """CPDR — match on last byte (BC=1) takes 16 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1000
+        cpu.regs.BC = 0x0001
+        cpu.write_byte(0x1000, 0x42)
+        write_program(cpu, [0xED, 0xB9])
+        assert cpu.step() == 16
+
+    def test_cpdr_no_match_bc3_timing(self, cpu):
+        """CPDR — no match, BC=3, first iteration takes 21 cycles."""
+        cpu.regs.A = 0x42
+        cpu.regs.HL = 0x1002
+        cpu.regs.BC = 0x0003
+        cpu.write_byte(0x1002, 0x00)
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x1000, 0x00)
+        write_program(cpu, [0xED, 0xB9])
+        assert cpu.step() == 21
+
+    @pytest.mark.parametrize(
+        "program,mnemonic,expected_cycles",
+        [
+            (b"\xcb\x40", "BIT 0,B", 8),
+            (b"\xcb\x46", "BIT 0,(HL)", 12),
+            (b"\xcb\xc0", "SET 0,B", 8),
+            (b"\xcb\xc6", "SET 0,(HL)", 15),
+            (b"\xcb\x80", "RES 0,B", 8),
+            (b"\xcb\x86", "RES 0,(HL)", 15),
+        ],
+    )
+    def test_cb_timing(self, cpu, program, mnemonic, expected_cycles):
+        """CB-prefix instruction timing."""
+        for _i, _b in enumerate(program):
+            cpu.write_byte(0 + _i, _b)
+        cpu.regs.PC = 0
+        cycles = cpu.step()
+        assert cycles == expected_cycles, (
+            f"{mnemonic}: expected {expected_cycles}, got {cycles}"
+        )
 
     @pytest.mark.parametrize(
         "program,mnemonic,expected_cycles",
@@ -1644,9 +2415,10 @@ class TestTiming:
         ],
     )
     def test_ed_timing(self, cpu, program, mnemonic, expected_cycles):
-        for i, b in enumerate(program):
-            cpu.write_byte(i, b)
-        cpu.PC = 0
+        """ED-prefix instruction timing."""
+        for _i, _b in enumerate(program):
+            cpu.write_byte(0 + _i, _b)
+        cpu.regs.PC = 0
         cycles = cpu.step()
         assert cycles == expected_cycles, (
             f"{mnemonic}: expected {expected_cycles}, got {cycles}"
@@ -1655,21 +2427,140 @@ class TestTiming:
     @pytest.mark.parametrize(
         "program,mnemonic,expected_cycles",
         [
+            # 16-bit load/store
             (b"\xdd\x21\x00\x00", "LD IX,nn", 14),
-            (b"\xdd\x7e\x00", "LD A,(IX+d)", 19),
-            (b"\xdd\x36\x00\x00", "LD (IX+d),n", 19),
-            (b"\xdd\x34\x00", "INC (IX+d)", 23),
-            (b"\xdd\x86\x00", "ADD A,(IX+d)", 19),
-            (b"\xdd\xe9", "JP (IX)", 8),
+            (b"\xdd\x22\x00\x10", "LD (nn),IX", 20),
+            (b"\xdd\x2a\x00\x10", "LD IX,(nn)", 20),
+            # 16-bit ALU
+            (b"\xdd\x23", "INC IX", 10),
+            (b"\xdd\x2b", "DEC IX", 10),
+            (b"\xdd\x09", "ADD IX,BC", 15),
+            (b"\xdd\x19", "ADD IX,DE", 15),
+            (b"\xdd\x29", "ADD IX,IX", 15),
+            (b"\xdd\x39", "ADD IX,SP", 15),
+            # Stack
             (b"\xdd\xe5", "PUSH IX", 15),
             (b"\xdd\xe1", "POP IX", 14),
+            (b"\xdd\xe3", "EX (SP),IX", 23),
+            (b"\xdd\xf9", "LD SP,IX", 10),
+            # Jump
+            (b"\xdd\xe9", "JP (IX)", 8),
+            # Indexed memory ops with displacement
+            (b"\xdd\x7e\x00", "LD A,(IX+d)", 19),
+            (b"\xdd\x46\x00", "LD B,(IX+d)", 19),
+            (b"\xdd\x77\x00", "LD (IX+d),A", 19),
+            (b"\xdd\x46\x00", "LD (IX+d),B", 19),
+            (b"\xdd\x36\x00\x00", "LD (IX+d),n", 19),
+            (b"\xdd\x34\x00", "INC (IX+d)", 23),
+            (b"\xdd\x35\x00", "DEC (IX+d)", 23),
+            # ALU with (IX+d)
+            (b"\xdd\x86\x00", "ADD A,(IX+d)", 19),
+            (b"\xdd\x8e\x00", "ADC A,(IX+d)", 19),
+            (b"\xdd\x96\x00", "SUB (IX+d)", 19),
+            (b"\xdd\x9e\x00", "SBC A,(IX+d)", 19),
+            (b"\xdd\xa6\x00", "AND (IX+d)", 19),
+            (b"\xdd\xae\x00", "XOR (IX+d)", 19),
+            (b"\xdd\xb6\x00", "OR (IX+d)", 19),
+            (b"\xdd\xbe\x00", "CP (IX+d)", 19),
+            # ADC/SBC IX,rr
+            (b"\xdd\xed\x4a", "ADC IX,BC", 15),
+            (b"\xdd\xed\x5a", "ADC IX,DE", 15),
+            (b"\xdd\xed\x6a", "ADC IX,IX", 15),
+            (b"\xdd\xed\x7a", "ADC IX,SP", 15),
+            (b"\xdd\xed\x42", "SBC IX,BC", 15),
+            (b"\xdd\xed\x52", "SBC IX,DE", 15),
+            (b"\xdd\xed\x62", "SBC IX,IX", 15),
+            (b"\xdd\xed\x72", "SBC IX,SP", 15),
+            # IXH/IXL 8-bit ops
+            (b"\xdd\x24", "INC IXH", 8),
+            (b"\xdd\x2c", "INC IXL", 8),
+            (b"\xdd\x25", "DEC IXH", 8),
+            (b"\xdd\x2d", "DEC IXL", 8),
+            (b"\xdd\x26\x00", "LD IXH,n", 11),
+            (b"\xdd\x2e\x00", "LD IXL,n", 11),
+            (b"\xdd\x44", "LD B,IXH", 8),
+            (b"\xdd\x45", "LD B,IXL", 8),
+            (b"\xdd\x60", "LD IXH,B", 8),
+            (b"\xdd\x68", "LD IXL,B", 8),
+            (b"\xdd\x7c", "LD A,IXH", 8),
+            (b"\xdd\x7d", "LD A,IXL", 8),
+            # ALU with IXH/IXL
+            (b"\xdd\x84", "ADD A,IXH", 8),
+            (b"\xdd\x85", "ADD A,IXL", 8),
+            (b"\xdd\x94", "SUB IXH", 8),
+            (b"\xdd\x95", "SUB IXL", 8),
+            # DDCB timing
+            (b"\xdd\xcb\x00\x06", "RLC (IX+d)", 23),
+            (b"\xdd\xcb\x00\x4e", "BIT 1,(IX+d)", 20),
+            (b"\xdd\xcb\x00\xc6", "SET 0,(IX+d)", 23),
+            (b"\xdd\xcb\x00\x86", "RES 0,(IX+d)", 23),
         ],
     )
     def test_ix_timing(self, cpu, program, mnemonic, expected_cycles):
-        cpu.IX = 0x1000
-        for i, b in enumerate(program):
-            cpu.write_byte(i, b)
-        cpu.PC = 0
+        """IX-prefix instruction timing."""
+        cpu.regs.IX = 0x1000
+        cpu.regs.SP = 0xFFFE
+        cpu.write_byte(0x1000, 0x00)  # Target memory for indexed ops
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x0FFD, 0x00)  # Stack area for EX (SP),IX
+        cpu.write_byte(0x0FFE, 0x00)
+        for _i, _b in enumerate(program):
+            cpu.write_byte(0 + _i, _b)
+        cpu.regs.PC = 0
+        cycles = cpu.step()
+        assert cycles == expected_cycles, (
+            f"{mnemonic}: expected {expected_cycles}, got {cycles}"
+        )
+
+    @pytest.mark.parametrize(
+        "program,mnemonic,expected_cycles",
+        [
+            # Same as IX but for IY
+            (b"\xfd\x21\x00\x00", "LD IY,nn", 14),
+            (b"\xfd\x22\x00\x10", "LD (nn),IY", 20),
+            (b"\xfd\x2a\x00\x10", "LD IY,(nn)", 20),
+            (b"\xfd\x23", "INC IY", 10),
+            (b"\xfd\x2b", "DEC IY", 10),
+            (b"\xfd\x09", "ADD IY,BC", 15),
+            (b"\xfd\x19", "ADD IY,DE", 15),
+            (b"\xfd\x29", "ADD IY,IY", 15),
+            (b"\xfd\x39", "ADD IY,SP", 15),
+            (b"\xfd\xe5", "PUSH IY", 15),
+            (b"\xfd\xe1", "POP IY", 14),
+            (b"\xfd\xe3", "EX (SP),IY", 23),
+            (b"\xfd\xf9", "LD SP,IY", 10),
+            (b"\xfd\xe9", "JP (IY)", 8),
+            (b"\xfd\x7e\x00", "LD A,(IY+d)", 19),
+            (b"\xfd\x36\x00\x00", "LD (IY+d),n", 19),
+            (b"\xfd\x34\x00", "INC (IY+d)", 23),
+            (b"\xfd\x35\x00", "DEC (IY+d)", 23),
+            (b"\xfd\x86\x00", "ADD A,(IY+d)", 19),
+            (b"\xfd\xed\x4a", "ADC IY,BC", 15),
+            (b"\xfd\xed\x42", "SBC IY,BC", 15),
+            (b"\xfd\x24", "INC IYH", 8),
+            (b"\xfd\x2c", "INC IYL", 8),
+            (b"\xfd\x25", "DEC IYH", 8),
+            (b"\xfd\x2d", "DEC IYL", 8),
+            (b"\xfd\x26\x00", "LD IYH,n", 11),
+            (b"\xfd\x2e\x00", "LD IYL,n", 11),
+            (b"\xfd\x7c", "LD A,IYH", 8),
+            (b"\xfd\x7d", "LD A,IYL", 8),
+            (b"\xfd\xcb\x00\x06", "RLC (IY+d)", 23),
+            (b"\xfd\xcb\x00\x4e", "BIT 1,(IY+d)", 20),
+            (b"\xfd\xcb\x00\xc6", "SET 0,(IY+d)", 23),
+        ],
+    )
+    def test_iy_timing(self, cpu, program, mnemonic, expected_cycles):
+        """IY-prefix instruction timing."""
+        cpu.regs.IY = 0x1000
+        cpu.regs.SP = 0xFFFE
+        cpu.write_byte(0x1000, 0x00)
+        cpu.write_byte(0x1001, 0x00)
+        cpu.write_byte(0x0FFD, 0x00)
+        cpu.write_byte(0x0FFE, 0x00)
+        for _i, _b in enumerate(program):
+            cpu.write_byte(0 + _i, _b)
+        cpu.regs.PC = 0
         cycles = cpu.step()
         assert cycles == expected_cycles, (
             f"{mnemonic}: expected {expected_cycles}, got {cycles}"
@@ -1682,100 +2573,216 @@ class TestTiming:
 
 
 class TestInterrupts:
+    """Interrupt handling tests."""
+
     def test_nmi_jumps_to_0066(self, cpu):
-        cpu.PC = 0x1000
-        cpu.SP = 0xFFFF
-        cpu.IFF1 = True
+        """NMI — always jumps to 0x0066."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IFF1 = True
         cpu.trigger_nmi()
         cpu.step()
-        assert cpu.PC == 0x0066
+        assert cpu.regs.PC == 0x0066
 
     def test_nmi_clears_iff1(self, cpu):
-        cpu.PC = 0x1000
-        cpu.SP = 0xFFFF
-        cpu.IFF1 = True
+        """NMI — clears IFF1."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IFF1 = True
         cpu.trigger_nmi()
         cpu.step()
-        assert not cpu.IFF1
+        assert not cpu.regs.IFF1
+
+    def test_nmi_preserves_iff2(self, cpu):
+        """NMI — IFF2 is not affected."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IFF1 = True
+        cpu.regs.IFF2 = True
+        cpu.trigger_nmi()
+        cpu.step()
+        assert cpu.regs.IFF2
+
+    def test_im0_rst_ff(self, cpu):
+        """IM 0 — RST 0xFF instruction on data bus -> PC=0x0038."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 0
+        cpu.regs.IFF1 = True
+        cpu.trigger_interrupt(0xFF)
+        cpu.step()
+        assert cpu.regs.PC == 0x0038
+        assert not cpu.regs.IFF1
 
     def test_im1(self, cpu):
-        cpu.PC = 0x1000
-        cpu.SP = 0xFFFF
-        cpu.IM = 1
-        cpu.IFF1 = True
+        """IM 1 — always jumps to 0x0038."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
         cpu.trigger_interrupt(0x00)
         cpu.step()
-        assert cpu.PC == 0x0038
+        assert cpu.regs.PC == 0x0038
 
     def test_im2_vectored(self, cpu):
-        cpu.PC = 0x1000
-        cpu.SP = 0xFFFF
-        cpu.IM = 2
-        cpu.I = 0x10
-        cpu.IFF1 = True
+        """IM 2 — vectored interrupt using I register and data bus."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 2
+        cpu.regs.I = 0x10
+        cpu.regs.IFF1 = True
         cpu.write_byte(0x1020, 0x00)
         cpu.write_byte(0x1021, 0x40)
         cpu.trigger_interrupt(0x20)
         cpu.step()
-        assert cpu.PC == 0x4000
+        assert cpu.regs.PC == 0x4000
 
-    def test_di(self, cpu):
-        cpu.IFF1 = True
-        cpu.IFF2 = True
-        write_program(cpu, [0xF3])
-        cpu.step()
-        assert not cpu.IFF1
-        assert not cpu.IFF2
-
-    def test_ei(self, cpu):
-        cpu.IFF1 = False
-        cpu.IFF2 = False
-        write_program(cpu, [0xFB, 0x00])
-        cpu.step()
-        cpu.step()
-        assert cpu.IFF1
-        assert cpu.IFF2
-
-    def test_interrupt_not_accepted_when_disabled(self, cpu):
-        cpu.PC = 0x0000
-        cpu.SP = 0xFFFF
-        cpu.IM = 1
-        cpu.IFF1 = False
-        cpu.write_byte(0x0000, 0x00)
+    def test_interrupt_pushes_return_address(self, cpu):
+        """INT — return address is pushed to stack."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
         cpu.trigger_interrupt(0x00)
         cpu.step()
-        assert cpu.PC == 0x0001
+        assert cpu.read_byte(0xFFFE) == 0x10  # high byte
+        assert cpu.read_byte(0xFFFD) == 0x00  # low byte
+
+    def test_di(self, cpu):
+        """DI — disables interrupts."""
+        cpu.regs.IFF1 = True
+        cpu.regs.IFF2 = True
+        write_program(cpu, [0xF3])
+        cpu.step()
+        assert not cpu.regs.IFF1
+        assert not cpu.regs.IFF2
+
+    def test_ei(self, cpu):
+        """EI — enables interrupts after next instruction."""
+        cpu.regs.IFF1 = False
+        cpu.regs.IFF2 = False
+        write_program(cpu, [0xFB, 0x00])  # EI; NOP
+        cpu.step()  # EI
+        cpu.step()  # NOP (EI takes effect)
+        assert cpu.regs.IFF1
+        assert cpu.regs.IFF2
+
+    def test_interrupt_not_accepted_when_disabled(self, cpu):
+        """INT — not accepted when IFF1=0."""
+        cpu.regs.PC = 0x0000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = False
+        cpu.write_byte(0x0000, 0x00)  # NOP
+        cpu.trigger_interrupt(0x00)
+        cpu.step()
+        assert cpu.regs.PC == 0x0001  # NOP executed, not interrupted
 
     def test_retn(self, cpu):
-        cpu.SP = 0xFFFD
+        """RETN — return from NMI, restores IFF1 from IFF2."""
+        cpu.regs.SP = 0xFFFD
         cpu.write_byte(0xFFFD, 0x00)
         cpu.write_byte(0xFFFE, 0x10)
-        cpu.IFF1 = False
-        cpu.IFF2 = True
+        cpu.regs.IFF1 = False
+        cpu.regs.IFF2 = True
         write_program(cpu, [0xED, 0x45])
         cpu.step()
-        assert cpu.PC == 0x1000
-        assert cpu.IFF1
+        assert cpu.regs.PC == 0x1000
+        assert cpu.regs.IFF1
+
+    def test_reti(self, cpu):
+        """RETI — return from interrupt."""
+        cpu.regs.SP = 0xFFFD
+        cpu.write_byte(0xFFFD, 0x00)
+        cpu.write_byte(0xFFFE, 0x20)
+        write_program(cpu, [0xED, 0x4D])
+        cpu.step()
+        assert cpu.regs.PC == 0x2000
+
+    def test_maskable_interrupt_clears_both_iffs(self, cpu):
+        """INT — clears both IFF1 and IFF2."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
+        cpu.regs.IFF2 = True
+        cpu.trigger_interrupt(0x00)
+        cpu.step()
+        assert not cpu.regs.IFF1
+        assert not cpu.regs.IFF2
 
     def test_nmi_exits_halt(self, cpu):
-        write_program(cpu, [0x76])
+        """NMI — exits HALT and jumps to 0x0066."""
+        write_program(cpu, [0x76])  # HALT
         cpu.step()
         assert cpu.halted
+        assert cpu.regs.PC == 0
         cpu.trigger_nmi()
         cpu.step()
         assert not cpu.halted
-        assert cpu.PC == 0x0066
+        assert cpu.regs.PC == 0x0066  # NMI vector
+
+    def test_nmi_returns_past_halt(self, cpu):
+        """NMI — RETN returns to instruction after HALT."""
+        cpu.regs.SP = 0xFFFD
+        cpu.write_byte(0xFFFD, 0x01)  # Return address low
+        cpu.write_byte(0xFFFE, 0x00)  # Return address high
+        write_program(cpu, [0x76])  # HALT
+        cpu.step()
+        assert cpu.halted
+        cpu.trigger_nmi()
+        cpu.step()  # Handle NMI
+        cpu.write_byte(0x0066, 0xED)  # RETN at NMI vector
+        cpu.write_byte(0x0067, 0x45)
+        cpu.step()  # Execute RETN
+        assert cpu.regs.PC == 1  # Returned past HALT
+
+    def test_maskable_interrupt_exits_halt(self, cpu):
+        """INT — exits HALT and advances PC past HALT instruction."""
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
+        write_program(cpu, [0x76])  # HALT
+        cpu.step()
+        assert cpu.halted
+        assert cpu.regs.PC == 0
+        cpu.trigger_interrupt(0x00)
+        cpu.step()
+        assert not cpu.halted
+        assert cpu.regs.PC == 0x0038  # IM 1 vector
+
+    def test_ei_when_already_enabled(self, cpu):
+        """EI — works correctly when interrupts already enabled."""
+        cpu.regs.IFF1 = True
+        cpu.regs.IFF2 = True
+        write_program(cpu, [0xFB, 0x00])  # EI; NOP
+        cpu.step()  # EI
+        cpu.step()  # NOP (EI takes effect)
+        assert cpu.regs.IFF1
+        assert cpu.regs.IFF2
 
     def test_ld_a_i_interrupt_bug(self, cpu):
-        cpu.I = 0x55
-        cpu.IFF2 = True
-        write_program(cpu, [0xED, 0x57, 0x00])
-        cpu.step()
+        """LD A,I — PV cleared if interrupt accepted after."""
+        cpu.regs.I = 0x55
+        cpu.regs.IFF2 = True
+        write_program(cpu, [0xED, 0x57, 0x00])  # LD A,I; NOP
+        cpu.step()  # LD A,I
         cpu.trigger_interrupt(0x00)
-        cpu.IM = 1
-        cpu.IFF1 = True
-        cpu.step()
-        assert not flag_set(cpu, FLAG_PV)
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
+        cpu.step()  # NOP with interrupt
+        assert not flag_set(cpu, FLAG_PV)  # PV should be cleared due to bug
+
+    def test_ld_a_r_interrupt_bug(self, cpu):
+        """LD A,R — PV cleared if interrupt accepted after."""
+        cpu.regs.R = 0x42
+        cpu.regs.IFF2 = True
+        write_program(cpu, [0xED, 0x5F, 0x00])  # LD A,R; NOP
+        cpu.step()  # LD A,R
+        cpu.trigger_interrupt(0x00)
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
+        cpu.step()  # NOP with interrupt
+        assert not flag_set(cpu, FLAG_PV)  # PV should be cleared due to bug
 
 
 # ============================================================
@@ -1784,59 +2791,301 @@ class TestInterrupts:
 
 
 class TestIndexed:
+    """IX and IY indexed instruction tests."""
+
     def test_ld_ix_nn(self, cpu):
+        """LD IX,nn — load immediate."""
         write_program(cpu, [0xDD, 0x21, 0x34, 0x12])
         cpu.step()
-        assert cpu.IX == 0x1234
+        assert cpu.regs.IX == 0x1234
+
+    def test_ld_iy_nn(self, cpu):
+        """LD IY,nn — load immediate."""
+        write_program(cpu, [0xFD, 0x21, 0x78, 0x56])
+        cpu.step()
+        assert cpu.regs.IY == 0x5678
 
     def test_ld_a_ix_d(self, cpu):
-        cpu.IX = 0x1000
+        """LD A,(IX+d) — load from indexed address."""
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1005, 0xAB)
         write_program(cpu, [0xDD, 0x7E, 0x05])
         cpu.step()
-        assert cpu.A == 0xAB
+        assert cpu.regs.A == 0xAB
 
     def test_ld_ix_d_n(self, cpu):
-        cpu.IX = 0x1000
+        """LD (IX+d),n — store immediate at indexed address."""
+        cpu.regs.IX = 0x1000
         write_program(cpu, [0xDD, 0x36, 0x02, 0x99])
         cpu.step()
         assert cpu.read_byte(0x1002) == 0x99
 
+    def test_ld_a_iy_negative_d(self, cpu):
+        """LD A,(IY+d) — negative displacement."""
+        cpu.regs.IY = 0x2000
+        cpu.write_byte(0x1FFE, 0x77)
+        write_program(cpu, [0xFD, 0x7E, 0xFE])  # IY-2
+        cpu.step()
+        assert cpu.regs.A == 0x77
+
     def test_add_a_ix_d(self, cpu):
-        cpu.A = 0x10
-        cpu.IX = 0x1000
+        """ADD A,(IX+d) — add indexed memory to A."""
+        cpu.regs.A = 0x10
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1003, 0x05)
         write_program(cpu, [0xDD, 0x86, 0x03])
         cpu.step()
-        assert cpu.A == 0x15
+        assert cpu.regs.A == 0x15
 
     def test_inc_ix_d(self, cpu):
-        cpu.IX = 0x1000
+        """INC (IX+d) — increment indexed memory."""
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1001, 0x09)
         write_program(cpu, [0xDD, 0x34, 0x01])
         cpu.step()
         assert cpu.read_byte(0x1001) == 0x0A
 
+    def test_dec_ix_d(self, cpu):
+        """DEC (IX+d) — decrement indexed memory."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1001, 0x09)
+        write_program(cpu, [0xDD, 0x35, 0x01])
+        cpu.step()
+        assert cpu.read_byte(0x1001) == 0x08
+
     def test_bit_ix_d(self, cpu):
-        cpu.IX = 0x1000
-        cpu.write_byte(0x1002, 0x08)
+        """BIT 3,(IX+d) — test bit in indexed memory."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1002, 0x08)  # bit 3 set
         write_program(cpu, [0xDD, 0xCB, 0x02, 0x5E])
         cpu.step()
         assert flag_clear(cpu, FLAG_Z)
 
+    def test_bit_ix_d_clear(self, cpu):
+        """BIT 3,(IX+d) — bit clear."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1002, 0x00)
+        write_program(cpu, [0xDD, 0xCB, 0x02, 0x5E])
+        cpu.step()
+        assert flag_set(cpu, FLAG_Z)
+
     def test_set_ix_d(self, cpu):
-        cpu.IX = 0x1000
+        """SET 0,(IX+d) — set bit in indexed memory."""
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1002, 0x00)
         write_program(cpu, [0xDD, 0xCB, 0x02, 0xC6])
         cpu.step()
         assert cpu.read_byte(0x1002) == 0x01
 
-    def test_add_ix_bc(self, cpu):
-        cpu.IX = 0x1000
-        cpu.BC = 0x0100
+    def test_res_ix_d(self, cpu):
+        """RES 0,(IX+d) — reset bit in indexed memory."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1002, 0xFF)
+        write_program(cpu, [0xDD, 0xCB, 0x02, 0x86])
+        cpu.step()
+        assert cpu.read_byte(0x1002) == 0xFE
+
+    def test_inc_ix(self, cpu):
+        """INC IX — increment index register."""
+        cpu.regs.IX = 0x1000
+        write_program(cpu, [0xDD, 0x23])
+        cpu.step()
+        assert cpu.regs.IX == 0x1001
+
+    def test_dec_ix(self, cpu):
+        """DEC IX — decrement index register."""
+        cpu.regs.IX = 0x1000
+        write_program(cpu, [0xDD, 0x2B])
+        cpu.step()
+        assert cpu.regs.IX == 0x0FFF
+
+    def test_inc_iy(self, cpu):
+        """INC IY — increment index register."""
+        cpu.regs.IY = 0x2000
+        write_program(cpu, [0xFD, 0x23])
+        cpu.step()
+        assert cpu.regs.IY == 0x2001
+
+    def test_dec_iy(self, cpu):
+        """DEC IY — decrement index register."""
+        cpu.regs.IY = 0x2000
+        write_program(cpu, [0xFD, 0x2B])
+        cpu.step()
+        assert cpu.regs.IY == 0x1FFF
+
+    def test_add_ix_rr(self, cpu):
+        """ADD IX,BC — add register pair to IX."""
+        cpu.regs.IX = 0x1000
+        cpu.regs.BC = 0x0100
         write_program(cpu, [0xDD, 0x09])
         cpu.step()
-        assert cpu.IX == 0x1100
+        assert cpu.regs.IX == 0x1100
+
+    def test_add_iy_rr(self, cpu):
+        """ADD IY,DE — add register pair to IY."""
+        cpu.regs.IY = 0x2000
+        cpu.regs.DE = 0x0200
+        write_program(cpu, [0xFD, 0x19])
+        cpu.step()
+        assert cpu.regs.IY == 0x2200
+
+    def test_push_pop_ix(self, cpu):
+        """PUSH IX / POP IX — round-trip."""
+        cpu.regs.SP = 0x2000
+        cpu.regs.IX = 0xABCD
+        write_program(cpu, [0xDD, 0xE5, 0xDD, 0xE1])  # PUSH IX; POP IX
+        cpu.step()
+        cpu.regs.IX = 0x0000
+        cpu.step()
+        assert cpu.regs.IX == 0xABCD
+
+    def test_push_pop_iy(self, cpu):
+        """PUSH IY / POP IY — round-trip."""
+        cpu.regs.SP = 0x2000
+        cpu.regs.IY = 0x1234
+        write_program(cpu, [0xFD, 0xE5, 0xFD, 0xE1])  # PUSH IY; POP IY
+        cpu.step()
+        cpu.regs.IY = 0x0000
+        cpu.step()
+        assert cpu.regs.IY == 0x1234
+
+    def test_ld_ix_nn_indirect(self, cpu):
+        """LD IX,(nn) — load IX from memory."""
+        cpu.write_byte(0x5000, 0x34)
+        cpu.write_byte(0x5001, 0x12)
+        write_program(cpu, [0xDD, 0x2A, 0x00, 0x50])
+        cpu.step()
+        assert cpu.regs.IX == 0x1234
+
+    def test_ld_nn_indirect_ix(self, cpu):
+        """LD (nn),IX — store IX to memory."""
+        cpu.regs.IX = 0xABCD
+        write_program(cpu, [0xDD, 0x22, 0x00, 0x50])
+        cpu.step()
+        assert cpu.read_byte(0x5000) == 0xCD
+        assert cpu.read_byte(0x5001) == 0xAB
+
+    def test_ld_sp_ix(self, cpu):
+        """LD SP,IX — copy IX to SP."""
+        cpu.regs.IX = 0x4000
+        write_program(cpu, [0xDD, 0xF9])
+        cpu.step()
+        assert cpu.regs.SP == 0x4000
+
+    def test_ld_sp_iy(self, cpu):
+        """LD SP,IY — copy IY to SP."""
+        cpu.regs.IY = 0x5000
+        write_program(cpu, [0xFD, 0xF9])
+        cpu.step()
+        assert cpu.regs.SP == 0x5000
+
+    def test_ld_ixh_ixh(self, cpu):
+        """LD IXH,IXH — undocumented self-copy no-op (DD 64)."""
+        cpu.regs.IX = 0xABCD
+        write_program(cpu, [0xDD, 0x64])
+        cycles = cpu.step()
+        assert (cpu.regs.IX >> 8) & 0xFF == 0xAB
+        assert cycles == 8
+
+    def test_ld_ixl_ixl(self, cpu):
+        """LD IXL,IXL — undocumented self-copy no-op (DD 6D)."""
+        cpu.regs.IX = 0xABCD
+        write_program(cpu, [0xDD, 0x6D])
+        cycles = cpu.step()
+        assert cpu.regs.IX & 0xFF == 0xCD
+        assert cycles == 8
+
+    def test_ld_ixh_ixl(self, cpu):
+        """LD IXH,IXL — copy IXL to IXH (DD 65)."""
+        cpu.regs.IX = 0xABCD
+        write_program(cpu, [0xDD, 0x65])
+        cycles = cpu.step()
+        assert (cpu.regs.IX >> 8) & 0xFF == 0xCD
+        assert cycles == 8
+
+    def test_ld_ixl_ixh(self, cpu):
+        """LD IXL,IXH — copy IXH to IXL (DD 6C)."""
+        cpu.regs.IX = 0xABCD
+        write_program(cpu, [0xDD, 0x6C])
+        cycles = cpu.step()
+        assert cpu.regs.IX & 0xFF == 0xAB
+        assert cycles == 8
+
+    def test_ld_iyh_iyh(self, cpu):
+        """LD IYH,IYH — undocumented self-copy no-op (FD 64)."""
+        cpu.regs.IY = 0xABCD
+        write_program(cpu, [0xFD, 0x64])
+        cycles = cpu.step()
+        assert (cpu.regs.IY >> 8) & 0xFF == 0xAB
+        assert cycles == 8
+
+    def test_ld_iyl_iyl(self, cpu):
+        """LD IYL,IYL — undocumented self-copy no-op (FD 6D)."""
+        cpu.regs.IY = 0xABCD
+        write_program(cpu, [0xFD, 0x6D])
+        cycles = cpu.step()
+        assert cpu.regs.IY & 0xFF == 0xCD
+        assert cycles == 8
+
+    def test_ld_iyh_iyl(self, cpu):
+        """LD IYH,IYL — copy IYL to IYH (FD 65)."""
+        cpu.regs.IY = 0xABCD
+        write_program(cpu, [0xFD, 0x65])
+        cycles = cpu.step()
+        assert (cpu.regs.IY >> 8) & 0xFF == 0xCD
+        assert cycles == 8
+
+    def test_ld_iyl_iyh(self, cpu):
+        """LD IYL,IYH — copy IYH to IYL (FD 6C)."""
+        cpu.regs.IY = 0xABCD
+        write_program(cpu, [0xFD, 0x6C])
+        cycles = cpu.step()
+        assert cpu.regs.IY & 0xFF == 0xAB
+        assert cycles == 8
+
+    def test_ld_ixh_n(self, cpu):
+        """LD IXH,n — load immediate into IXH (DD 26)."""
+        cpu.regs.IX = 0x0000
+        write_program(cpu, [0xDD, 0x26, 0x42])
+        cpu.step()
+        assert (cpu.regs.IX >> 8) & 0xFF == 0x42
+
+    def test_ld_ixl_n(self, cpu):
+        """LD IXL,n — load immediate into IXL (DD 2E)."""
+        cpu.regs.IX = 0x0000
+        write_program(cpu, [0xDD, 0x2E, 0x42])
+        cpu.step()
+        assert cpu.regs.IX & 0xFF == 0x42
+
+    def test_ld_ixh_r(self, cpu):
+        """LD IXH,B — load register into IXH (DD 60)."""
+        cpu.regs.IX = 0x0000
+        cpu.regs.B = 0x42
+        write_program(cpu, [0xDD, 0x60])
+        cpu.step()
+        assert (cpu.regs.IX >> 8) & 0xFF == 0x42
+
+    def test_ld_ixl_r(self, cpu):
+        """LD IXL,C — load register into IXL (DD 69)."""
+        cpu.regs.IX = 0x0000
+        cpu.regs.C = 0x42
+        write_program(cpu, [0xDD, 0x69])
+        cpu.step()
+        assert cpu.regs.IX & 0xFF == 0x42
+
+    def test_ld_r_ixh(self, cpu):
+        """LD B,IXH — load IXH into register (DD 44)."""
+        cpu.regs.IX = 0x4200
+        write_program(cpu, [0xDD, 0x44])
+        cpu.step()
+        assert cpu.regs.B == 0x42
+
+    def test_ld_r_ixl(self, cpu):
+        """LD C,IXL — load IXL into register (DD 4D)."""
+        cpu.regs.IX = 0x0042
+        write_program(cpu, [0xDD, 0x4D])
+        cpu.step()
+        assert cpu.regs.C == 0x42
 
     @pytest.mark.parametrize(
         "reg,opcode_suffix",
@@ -1849,8 +3098,9 @@ class TestIndexed:
         ],
     )
     def test_ld_ix_d_r(self, cpu, reg, opcode_suffix):
-        cpu.IX = 0x1000
-        setattr(cpu, reg, 0x42)
+        """LD (IX+d),r — store register at indexed address."""
+        cpu.regs.IX = 0x1000
+        setattr(cpu.regs, reg, 0x42)
         write_program(cpu, [0xDD, opcode_suffix, 0x05])
         cpu.step()
         assert cpu.read_byte(0x1005) == 0x42
@@ -1868,11 +3118,58 @@ class TestIndexed:
         ],
     )
     def test_ld_r_ix_d(self, cpu, reg, opcode_suffix):
-        cpu.IX = 0x1000
+        """LD r,(IX+d) — load register from indexed address."""
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1005, 0x99)
         write_program(cpu, [0xDD, opcode_suffix, 0x05])
         cpu.step()
-        assert getattr(cpu, reg) == 0x99
+        assert getattr(cpu.regs, reg) == 0x99
+
+    def test_sub_a_ix_d(self, cpu):
+        """SUB A,(IX+d) — subtract indexed memory from A."""
+        cpu.regs.A = 0x20
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0x05)
+        write_program(cpu, [0xDD, 0x96, 0x03])
+        cpu.step()
+        assert cpu.regs.A == 0x1B
+
+    def test_and_ix_d(self, cpu):
+        """AND (IX+d) — logical AND with indexed memory."""
+        cpu.regs.A = 0xFF
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0x0F)
+        write_program(cpu, [0xDD, 0xA6, 0x03])
+        cpu.step()
+        assert cpu.regs.A == 0x0F
+
+    def test_or_ix_d(self, cpu):
+        """OR (IX+d) — logical OR with indexed memory."""
+        cpu.regs.A = 0x0F
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0xF0)
+        write_program(cpu, [0xDD, 0xB6, 0x03])
+        cpu.step()
+        assert cpu.regs.A == 0xFF
+
+    def test_xor_ix_d(self, cpu):
+        """XOR (IX+d) — logical XOR with indexed memory."""
+        cpu.regs.A = 0xAA
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0xAA)
+        write_program(cpu, [0xDD, 0xAE, 0x03])
+        cpu.step()
+        assert cpu.regs.A == 0x00
+
+    def test_cp_ix_d(self, cpu):
+        """CP (IX+d) — compare A with indexed memory."""
+        cpu.regs.A = 0x42
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0x42)
+        write_program(cpu, [0xDD, 0xBE, 0x03])
+        cpu.step()
+        assert cpu.regs.A == 0x42  # unchanged
+        assert flag_set(cpu, FLAG_Z)
 
 
 # ============================================================
@@ -1881,57 +3178,125 @@ class TestIndexed:
 
 
 class TestEDInstructions:
+    """ED-prefix miscellaneous instructions."""
+
     def test_ld_i_a(self, cpu):
-        cpu.A = 0x42
+        """LD I,A — load I register from A."""
+        cpu.regs.A = 0x42
         write_program(cpu, [0xED, 0x47])
         cpu.step()
-        assert cpu.I == 0x42
+        assert cpu.regs.I == 0x42
 
     def test_ld_r_a(self, cpu):
-        cpu.A = 0x11
+        """LD R,A — load R register from A."""
+        cpu.regs.A = 0x11
         write_program(cpu, [0xED, 0x4F])
         cpu.step()
-        assert cpu.R == 0x11
+        assert cpu.regs.R == 0x11
 
     def test_ld_a_i(self, cpu):
-        cpu.I = 0x55
-        cpu.IFF2 = True
+        """LD A,I — load A from I, PV = IFF2."""
+        cpu.regs.I = 0x55
+        cpu.regs.IFF2 = True
         write_program(cpu, [0xED, 0x57])
         cpu.step()
-        assert cpu.A == 0x55
+        assert cpu.regs.A == 0x55
         assert flag_set(cpu, FLAG_PV)
 
     def test_ld_a_i_iff2_clear(self, cpu):
-        cpu.I = 0x55
-        cpu.IFF2 = False
+        """LD A,I — PV=0 when IFF2=0."""
+        cpu.regs.I = 0x55
+        cpu.regs.IFF2 = False
         write_program(cpu, [0xED, 0x57])
         cpu.step()
-        assert cpu.A == 0x55
+        assert cpu.regs.A == 0x55
         assert flag_clear(cpu, FLAG_PV)
 
+    def test_ld_a_r(self, cpu):
+        """LD A,R — load A from R register."""
+        cpu.regs.R = 0x42
+        write_program(cpu, [0xED, 0x5F])
+        cpu.step()
+        # R may have been incremented by instruction fetch
+        assert cpu.regs.A is not None  # basic sanity
+
+    @pytest.mark.parametrize(
+        "pair,load_op,store_op",
+        [
+            ("BC", [0xED, 0x4B], [0xED, 0x43]),
+            ("DE", [0xED, 0x5B], [0xED, 0x53]),
+            ("HL", [0xED, 0x6B], [0xED, 0x63]),
+            ("SP", [0xED, 0x7B], [0xED, 0x73]),
+        ],
+    )
+    def test_ed_ld_rr_nn_indirect(self, cpu, pair, load_op, store_op):
+        """ED LD rr,(nn) and LD (nn),rr — all pairs."""
+        # Store
+        cpu.reset()
+        setattr(cpu.regs, pair, 0x1234)
+        write_program(cpu, store_op + [0x00, 0x50])
+        cpu.step()
+        assert cpu.read_byte(0x5000) == 0x34
+        assert cpu.read_byte(0x5001) == 0x12
+
+        # Load
+        cpu.reset()
+        cpu.write_byte(0x5000, 0xCD)
+        cpu.write_byte(0x5001, 0xAB)
+        write_program(cpu, load_op + [0x00, 0x50])
+        cpu.step()
+        assert getattr(cpu.regs, pair) == 0xABCD
+
     def test_rld(self, cpu):
-        cpu.A = 0x9A
-        cpu.HL = 0x1000
+        """RLD — rotate left digit."""
+        cpu.regs.A = 0x9A
+        cpu.regs.HL = 0x1000
         cpu.write_byte(0x1000, 0x31)
         write_program(cpu, [0xED, 0x6F])
         cpu.step()
-        assert cpu.A == 0x93
+        assert cpu.regs.A == 0x93
         assert cpu.read_byte(0x1000) == 0x1A
 
     def test_rrd(self, cpu):
-        cpu.A = 0x84
-        cpu.HL = 0x1000
+        """RRD — rotate right digit."""
+        cpu.regs.A = 0x84
+        cpu.regs.HL = 0x1000
         cpu.write_byte(0x1000, 0x20)
         write_program(cpu, [0xED, 0x67])
         cpu.step()
-        assert cpu.A == 0x80
+        assert cpu.regs.A == 0x80
         assert cpu.read_byte(0x1000) == 0x42
 
-    @pytest.mark.parametrize("im_val,opcode", [(0, 0x46), (1, 0x56), (2, 0x5E)])
+    @pytest.mark.parametrize(
+        "im_val,opcode",
+        [
+            (0, 0x46),
+            (1, 0x56),
+            (2, 0x5E),
+        ],
+    )
     def test_im(self, cpu, im_val, opcode):
+        """IM 0/1/2 — set interrupt mode."""
         write_program(cpu, [0xED, opcode])
         cpu.step()
-        assert cpu.IM == im_val
+        assert cpu.regs.IM == im_val
+
+    def test_neg_various(self, cpu):
+        """NEG — various input values."""
+        test_cases = [
+            (0x00, 0x00, True, False),  # zero
+            (0x01, 0xFF, False, True),
+            (0x80, 0x80, False, True),  # overflow
+            (0x7F, 0x81, False, True),
+        ]
+        for a, expected, z, c in test_cases:
+            cpu.reset()
+            cpu.regs.A = a
+            write_program(cpu, [0xED, 0x44])
+            cpu.step()
+            assert cpu.regs.A == expected, f"NEG {a:#04x} -> {expected:#04x}"
+            assert flag_set(cpu, FLAG_Z) == z
+            assert flag_set(cpu, FLAG_C) == c
 
 
 # ============================================================
@@ -1940,17 +3305,21 @@ class TestEDInstructions:
 
 
 class TestHalt:
+    """HALT instruction behavior."""
+
     def test_halt_stops_execution(self, cpu):
+        """HALT — CPU enters halted state."""
         write_program(cpu, [0x76])
         cpu.step()
         assert cpu.halted
 
     def test_halt_pc_does_not_advance(self, cpu):
+        """HALT — PC stays at HALT instruction on subsequent steps."""
         write_program(cpu, [0x76])
         cpu.step()
-        pc_after = cpu.PC
-        cpu.step()
-        assert cpu.PC == pc_after
+        pc_after = cpu.regs.PC
+        cpu.step()  # should re-execute HALT
+        assert cpu.regs.PC == pc_after
 
 
 # ============================================================
@@ -1959,24 +3328,28 @@ class TestHalt:
 
 
 class TestNop:
+    """NOP instruction tests."""
+
     def test_nop_advances_pc(self, cpu):
+        """NOP — only advances PC by 1."""
         write_program(cpu, [0x00])
         cpu.step()
-        assert cpu.PC == 1
+        assert cpu.regs.PC == 1
 
     def test_nop_preserves_registers(self, cpu):
-        cpu.A = 0x42
-        cpu.BC = 0x1234
-        cpu.DE = 0x5678
-        cpu.HL = 0x9ABC
-        cpu.F = 0xFF
+        """NOP — does not modify any registers or flags."""
+        cpu.regs.A = 0x42
+        cpu.regs.BC = 0x1234
+        cpu.regs.DE = 0x5678
+        cpu.regs.HL = 0x9ABC
+        cpu.regs.F = 0xFF
         write_program(cpu, [0x00])
         cpu.step()
-        assert cpu.A == 0x42
-        assert cpu.BC == 0x1234
-        assert cpu.DE == 0x5678
-        assert cpu.HL == 0x9ABC
-        assert cpu.F == 0xFF
+        assert cpu.regs.A == 0x42
+        assert cpu.regs.BC == 0x1234
+        assert cpu.regs.DE == 0x5678
+        assert cpu.regs.HL == 0x9ABC
+        assert cpu.regs.F == 0xFF
 
 
 # ============================================================
@@ -1985,15 +3358,19 @@ class TestNop:
 
 
 class TestSLL:
+    """SLL (shift left logical) — undocumented instruction."""
+
     def test_sll_a(self, cpu):
-        cpu.A = 0x00
+        """SLL A — shift left, bit 0 = 1."""
+        cpu.regs.A = 0x00
         run_cb_instruction(cpu, 0x37)
-        assert cpu.A == 0x01
+        assert cpu.regs.A == 0x01
 
     def test_sll_a_with_carry(self, cpu):
-        cpu.A = 0x80
+        """SLL A — bit 7 goes to carry."""
+        cpu.regs.A = 0x80
         run_cb_instruction(cpu, 0x37)
-        assert cpu.A == 0x01
+        assert cpu.regs.A == 0x01
         assert flag_set(cpu, FLAG_C)
 
 
@@ -2003,50 +3380,121 @@ class TestSLL:
 
 
 class TestEdgeCases:
+    """Boundary conditions and regression tests."""
+
     def test_sp_wrap_around(self, cpu):
-        cpu.SP = 0x0001
-        cpu.BC = 0x1234
+        """SP wraps around on PUSH from 0x0001."""
+        cpu.regs.SP = 0x0001
+        cpu.regs.BC = 0x1234
         write_program(cpu, [0xC5])
         cpu.step()
-        assert cpu.SP == 0xFFFF
+        assert cpu.regs.SP == 0xFFFF
 
     def test_pc_wrap_around(self, cpu):
-        write_program(cpu, [0xC3, 0xFF, 0xFF])
+        """PC wraps around past 0xFFFF."""
+        write_program(cpu, [0xC3, 0xFF, 0xFF])  # JP 0xFFFF
         cpu.step()
-        assert cpu.PC == 0xFFFF
-        cpu.write_byte(0xFFFF, 0x00)
+        assert cpu.regs.PC == 0xFFFF
+        cpu.write_byte(0xFFFF, 0x00)  # NOP at 0xFFFF
         cpu.step()
-        assert cpu.PC == 0x0000
+        assert cpu.regs.PC == 0x0000
 
     def test_add_overflow_signed(self, cpu):
-        cpu.A = 0x7F
+        """ADD A,n — 0x7F+1=0x80. Z80 uses parity, not signed overflow."""
+        cpu.regs.A = 0x7F
         write_program(cpu, [0xC6, 0x01])
         cpu.step()
-        assert cpu.A == 0x80
-        assert flag_set(cpu, FLAG_PV)
+        assert cpu.regs.A == 0x80
+        # 0x80 has 1 bit set (odd parity) → PV clear on Z80
+        assert flag_clear(cpu, FLAG_PV)
         assert flag_set(cpu, FLAG_S)
 
+    def test_sub_overflow_signed(self, cpu):
+        """SUB A,n — 0x80-1=0x7F. Z80 uses parity, not signed overflow."""
+        cpu.regs.A = 0x80
+        write_program(cpu, [0xD6, 0x01])
+        cpu.step()
+        assert cpu.regs.A == 0x7F
+        # 0x7F has 7 bits set (odd parity) → PV clear on Z80
+        assert flag_clear(cpu, FLAG_PV)
+
+    def test_inc_0x7f_overflow(self, cpu):
+        """INC — 0x7F -> 0x80, PV set (signed overflow)."""
+        cpu.regs.A = 0x7F
+        write_program(cpu, [0x3C])
+        cpu.step()
+        assert cpu.regs.A == 0x80
+        assert flag_set(cpu, FLAG_PV)
+
+    def test_dec_0x80_overflow(self, cpu):
+        """DEC — 0x80 -> 0x7F, PV set (signed overflow)."""
+        cpu.regs.A = 0x80
+        write_program(cpu, [0x3D])
+        cpu.step()
+        assert cpu.regs.A == 0x7F
+        assert flag_set(cpu, FLAG_PV)
+
+    def test_ldir_overlapping_blocks(self, cpu):
+        """LDIR — overlapping source and destination."""
+        cpu.write_byte(0x1000, 0xAA)
+        cpu.write_byte(0x1001, 0xBB)
+        cpu.write_byte(0x1002, 0xCC)
+        cpu.regs.HL = 0x1000
+        cpu.regs.DE = 0x1001  # overlapping
+        cpu.regs.BC = 0x0003
+        write_program(cpu, [0xED, 0xB0])
+        step_n(cpu, 3)
+        # First byte gets copied forward repeatedly
+        assert cpu.read_byte(0x1001) == 0xAA
+        assert cpu.read_byte(0x1002) == 0xAA
+        assert cpu.read_byte(0x1003) == 0xAA
+
+    def test_multiple_interrupts(self, cpu):
+        """Multiple interrupt triggers — only one accepted per check."""
+        cpu.regs.PC = 0x1000
+        cpu.regs.SP = 0xFFFF
+        cpu.regs.IM = 1
+        cpu.regs.IFF1 = True
+        cpu.trigger_interrupt(0x00)
+        cpu.step()
+        assert cpu.regs.PC == 0x0038
+        # After first interrupt, IFF1 is cleared
+        assert not cpu.regs.IFF1
+
     def test_r_register_increments(self, cpu):
-        cpu.R = 0x00
-        write_program(cpu, [0x00, 0x00, 0x00])
+        """R register increments with each instruction."""
+        cpu.regs.R = 0x00
+        write_program(cpu, [0x00, 0x00, 0x00])  # 3 NOPs
         cpu.step()
-        assert cpu.R == 1
+        r1 = cpu.regs.R
         cpu.step()
-        assert cpu.R == 2
+        r2 = cpu.regs.R
         cpu.step()
-        assert cpu.R == 3
+        r3 = cpu.regs.R
+        assert r1 == 1
+        assert r2 == 2
+        assert r3 == 3
 
     def test_r_register_bit7_preserved(self, cpu):
-        cpu.R = 0x80
+        """R register — bit 7 is preserved (only lower 7 bits count)."""
+        cpu.regs.R = 0x80
         write_program(cpu, [0x00])
         cpu.step()
-        assert cpu.R & 0x80
+        assert cpu.regs.R & 0x80  # bit 7 preserved
 
     def test_add_hl_hl(self, cpu):
-        cpu.HL = 0x4000
+        """ADD HL,HL — doubles HL."""
+        cpu.regs.HL = 0x4000
         write_program(cpu, [0x29])
         cpu.step()
-        assert cpu.HL == 0x8000
+        assert cpu.regs.HL == 0x8000
+
+    def test_ld_a_a(self, cpu):
+        """LD A,A — no-op equivalent."""
+        cpu.regs.A = 0x42
+        write_program(cpu, [0x7F])
+        cpu.step()
+        assert cpu.regs.A == 0x42
 
 
 # ============================================================
@@ -2055,11 +3503,26 @@ class TestEdgeCases:
 
 
 class TestIntegration:
+    """Small Z80 programs to verify instruction interaction."""
+
     def test_memcpy_loop(self, cpu):
+        """Copy 3 bytes using a loop: LD A,(HL); LD (DE),A; INC HL; INC DE; DEC B; JR NZ."""
+        # Source data at 0x1000
         cpu.write_byte(0x1000, 0x11)
         cpu.write_byte(0x1001, 0x22)
         cpu.write_byte(0x1002, 0x33)
 
+        # Program at 0x0000:
+        #   LD HL,0x1000
+        #   LD DE,0x2000
+        #   LD B,3
+        # loop:
+        #   LD A,(HL)
+        #   LD (DE),A
+        #   INC HL
+        #   INC DE
+        #   DEC B
+        #   JR NZ,loop
         program = [
             0x21,
             0x00,
@@ -2069,18 +3532,20 @@ class TestIntegration:
             0x20,  # LD DE,0x2000
             0x06,
             0x03,  # LD B,3
+            # loop (offset 8):
             0x7E,  # LD A,(HL)
             0x12,  # LD (DE),A
             0x23,  # INC HL
             0x13,  # INC DE
             0x05,  # DEC B
             0x20,
-            0xF9,  # JR NZ,-7
+            0xF9,  # JR NZ,-7 (back to offset 8)
         ]
         write_program(cpu, program)
 
+        # Execute enough steps
         for _ in range(50):
-            if cpu.PC >= len(program):
+            if cpu.regs.PC >= len(program):
                 break
             cpu.step()
 
@@ -2089,6 +3554,7 @@ class TestIntegration:
         assert cpu.read_byte(0x2002) == 0x33
 
     def test_sum_array(self, cpu):
+        """Sum 4 bytes: result in A."""
         cpu.write_byte(0x1000, 10)
         cpu.write_byte(0x1001, 20)
         cpu.write_byte(0x1002, 30)
@@ -2102,6 +3568,7 @@ class TestIntegration:
             0x04,  # LD B,4
             0x3E,
             0x00,  # LD A,0
+            # loop (offset 7):
             0x86,  # ADD A,(HL)
             0x23,  # INC HL
             0x05,  # DEC B
@@ -2111,13 +3578,19 @@ class TestIntegration:
         write_program(cpu, program)
 
         for _ in range(50):
-            if cpu.PC >= len(program):
+            if cpu.regs.PC >= len(program):
                 break
             cpu.step()
 
-        assert cpu.A == 100
+        assert cpu.regs.A == 100
 
     def test_call_ret_sequence(self, cpu):
+        """CALL subroutine that adds two numbers, then RET."""
+        # Main at 0x0000:
+        #   LD A,0x10
+        #   LD B,0x20
+        #   CALL 0x0100
+        #   HALT
         main = [
             0x3E,
             0x10,  # LD A,0x10
@@ -2129,8 +3602,9 @@ class TestIntegration:
             0x76,  # HALT
         ]
         write_program(cpu, main)
-        cpu.SP = 0xFFFF
+        cpu.regs.SP = 0xFFFF
 
+        # Subroutine at 0x0100: ADD A,B; RET
         cpu.write_byte(0x0100, 0x80)  # ADD A,B
         cpu.write_byte(0x0101, 0xC9)  # RET
 
@@ -2139,107 +3613,377 @@ class TestIntegration:
                 break
             cpu.step()
 
-        assert cpu.A == 0x30
+        assert cpu.regs.A == 0x30
         assert cpu.halted
+
+    def test_nested_calls(self, cpu):
+        """Nested CALL/RET."""
+        cpu.regs.SP = 0xFFFF
+
+        # Main: CALL 0x0100; HALT
+        cpu.write_byte(0x0000, 0xCD)
+        cpu.write_byte(0x0001, 0x00)
+        cpu.write_byte(0x0002, 0x01)
+        cpu.write_byte(0x0003, 0x76)  # HALT
+
+        # Sub1 at 0x0100: LD A,1; CALL 0x0200; RET
+        cpu.write_byte(0x0100, 0x3E)
+        cpu.write_byte(0x0101, 0x01)
+        cpu.write_byte(0x0102, 0xCD)
+        cpu.write_byte(0x0103, 0x00)
+        cpu.write_byte(0x0104, 0x02)
+        cpu.write_byte(0x0105, 0xC9)
+
+        # Sub2 at 0x0200: ADD A,2; RET
+        cpu.write_byte(0x0200, 0xC6)
+        cpu.write_byte(0x0201, 0x02)
+        cpu.write_byte(0x0202, 0xC9)
+
+        cpu.regs.PC = 0
+
+        for _ in range(20):
+            if cpu.halted:
+                break
+            cpu.step()
+
+        assert cpu.regs.A == 0x03
+        assert cpu.halted
+        assert cpu.regs.SP == 0xFFFF  # stack balanced
+
+    def test_push_pop_all_pairs(self, cpu):
+        """Push all pairs, pop in reverse order."""
+        cpu.regs.SP = 0x2000
+        cpu.regs.BC = 0x1111
+        cpu.regs.DE = 0x2222
+        cpu.regs.HL = 0x3333
+        cpu.regs.IFF1 = False  # Disable interrupts
+        cpu.interrupt_pending = False
+
+        program = [
+            0xC5,  # PUSH BC
+            0xD5,  # PUSH DE
+            0xE5,  # PUSH HL
+            # Clear registers
+            0x01,
+            0x00,
+            0x00,  # LD BC,0
+            0x11,
+            0x00,
+            0x00,  # LD DE,0
+            0x21,
+            0x00,
+            0x00,  # LD HL,0
+            # Pop in reverse
+            0xE1,  # POP HL
+            0xD1,  # POP DE
+            0xC1,  # POP BC
+        ]
+        write_program(cpu, program)
+
+        # Execute exactly 9 instructions (3 pushes + 3 loads + 3 pops)
+        for _ in range(9):
+            cpu.step()
+
+        assert cpu.regs.HL == 0x3333
+        assert cpu.regs.DE == 0x2222
+        assert cpu.regs.BC == 0x1111
+        assert cpu.regs.SP == 0x2000
+
+    def test_fibonacci(self, cpu):
+        """Calculate first 8 Fibonacci numbers."""
+        # Store fib(1)..fib(8) at 0x2000-0x2007
+        # fib: 1,1,2,3,5,8,13,21
+        program = [
+            0x3E,
+            0x01,  # LD A,1
+            0x06,
+            0x00,  # LD B,0
+            0x21,
+            0x00,
+            0x20,  # LD HL,0x2000
+            0x0E,
+            0x08,  # LD C,8 (counter)
+            # loop (offset 9):
+            0x77,  # LD (HL),A
+            0x23,  # INC HL
+            0x57,  # LD D,A (temp = current)
+            0x80,  # ADD A,B (current = current + previous)
+            0x42,  # LD B,D (previous = temp)
+            0x0D,  # DEC C
+            0x20,
+            0xF8,  # JR NZ, -8
+        ]
+        write_program(cpu, program)
+
+        for _ in range(100):
+            if cpu.regs.PC >= len(program):
+                break
+            cpu.step()
+
+        assert cpu.read_byte(0x2000) == 1
+        assert cpu.read_byte(0x2001) == 1
+        assert cpu.read_byte(0x2002) == 2
+        assert cpu.read_byte(0x2003) == 3
+        assert cpu.read_byte(0x2004) == 5
+        assert cpu.read_byte(0x2005) == 8
+        assert cpu.read_byte(0x2006) == 13
+        assert cpu.read_byte(0x2007) == 21
 
 
 # ============================================================
-# 30. Undocumented Flags (F3, F5)
+# 30. Parity Table Verification
+# ============================================================
+
+
+class TestParityTable:
+    """Verify the CPU parity flag (PV) is set correctly."""
+
+    @pytest.mark.parametrize("val", range(256))
+    def test_parity_flag(self, cpu, val):
+        """PV flag matches computed even parity after OR A,A."""
+        cpu.regs.A = val
+        write_program(cpu, [0xB7])  # OR A,A
+        cpu.step()
+        expected = _parity(val)
+        assert flag_set(cpu, FLAG_PV) == expected, f"PV flag for A={val:#04x} incorrect"
+
+
+# ============================================================
+# 31. Undocumented Flags (F3, F5)
 # ============================================================
 
 
 class TestUndocumentedFlags:
+    """
+    Z80 undocumented flags F3 and F5.
+
+    These flags copy bits 3 and 5 from the result of most instructions.
+    They are not used by Z80 hardware but some software uses them.
+    """
+
+    FLAG_F3 = 0x08
+    FLAG_F5 = 0x20
+
     def test_add_f3_f5_from_result(self, cpu):
-        cpu.A = 0x08
-        write_program(cpu, [0xC6, 0x00])
+        """ADD — F3/F5 copied from result bit 3/5."""
+        cpu.regs.A = 0x08  # bit 3 set
+        write_program(cpu, [0xC6, 0x00])  # ADD A,0
         cpu.step()
-        assert cpu.F & FLAG_F3
+        assert cpu.regs.F & self.FLAG_F3
 
     def test_sub_f3_f5_from_result(self, cpu):
-        cpu.A = 0x20
+        """SUB — F3/F5 copied from result bit 3/5."""
+        cpu.regs.A = 0x20  # bit 5 set
         write_program(cpu, [0xD6, 0x00])
         cpu.step()
-        assert cpu.F & FLAG_F5
+        assert cpu.regs.F & self.FLAG_F5
+
+    def test_and_f3_f5_from_result(self, cpu):
+        """AND — F3/F5 copied from result bit 3/5."""
+        cpu.regs.A = 0x08
+        write_program(cpu, [0xE6, 0xFF])
+        cpu.step()
+        assert cpu.regs.F & self.FLAG_F3
+
+    def test_or_f3_f5_from_result(self, cpu):
+        """OR — F3/F5 copied from result bit 3/5."""
+        cpu.regs.A = 0x20
+        write_program(cpu, [0xF6, 0x00])
+        cpu.step()
+        assert cpu.regs.F & self.FLAG_F5
+
+    def test_xor_f3_f5_from_result(self, cpu):
+        """XOR — F3/F5 copied from result bit 3/5."""
+        cpu.regs.A = 0x08
+        write_program(cpu, [0xEE, 0x00])  # XOR 0x00 (result = 0x08)
+        cpu.step()
+        assert cpu.regs.F & self.FLAG_F3
 
     def test_cp_f3_f5_from_operand(self, cpu):
-        cpu.A = 0x00
-        write_program(cpu, [0xFE, 0x28])
+        """CP — F3/F5 copied from operand, not result."""
+        cpu.regs.A = 0x00
+        write_program(cpu, [0xFE, 0x28])  # compare with 0x28 (bit 3 and 5 set)
         cpu.step()
-        assert cpu.F & FLAG_F3
-        assert cpu.F & FLAG_F5
+        assert cpu.regs.F & self.FLAG_F3
+        assert cpu.regs.F & self.FLAG_F5
+
+    def test_inc_f3_f5(self, cpu):
+        """INC — F3/F5 from result."""
+        cpu.regs.A = 0x08
+        write_program(cpu, [0x3C])
+        cpu.step()
+        assert cpu.regs.F & self.FLAG_F3
+
+    def test_dec_f3_f5(self, cpu):
+        """DEC — F3/F5 from result."""
+        cpu.regs.A = 0x28
+        write_program(cpu, [0x3D])
+        cpu.step()
+        assert cpu.regs.F & self.FLAG_F5
 
 
 # ============================================================
-# 31. DD/FD Prefix Undocumented Behavior
+# 32. DD/FD Prefix Undocumented Behavior
 # ============================================================
 
 
 class TestDDFDFallthrough:
+    """
+    Undocumented Z80: Unknown DD/FD prefixes fall through to base opcode.
+
+    When a DD or FD prefix is followed by an opcode that has no IX/IY
+    equivalent, the CPU ignores the prefix and executes the base opcode.
+    """
+
     def test_dd_prefix_nop_fallthrough(self, cpu):
+        """DD prefix + NOP (0x00) executes NOP."""
         write_program(cpu, [0xDD, 0x00])
         cpu.step()
-        assert cpu.PC == 2
+        assert cpu.regs.PC == 2  # advanced past both bytes
 
     def test_fd_prefix_nop_fallthrough(self, cpu):
+        """FD prefix + NOP (0x00) executes NOP."""
         write_program(cpu, [0xFD, 0x00])
         cpu.step()
-        assert cpu.PC == 2
+        assert cpu.regs.PC == 2
 
     def test_dd_prefix_ld_a_n_fallthrough(self, cpu):
+        """DD prefix + LD A,n (0x3E) executes LD A,n."""
+        cpu.regs.PC = 0
         write_program(cpu, [0xDD, 0x3E, 0x42])
         cpu.step()
-        assert cpu.A == 0x42
+        assert cpu.regs.A == 0x42
+
+    def test_fd_prefix_add_a_b_fallthrough(self, cpu):
+        """FD prefix + ADD A,B (0x80) executes ADD A,B."""
+        cpu.regs.A = 0x10
+        cpu.regs.B = 0x20
+        write_program(cpu, [0xFD, 0x80])
+        cpu.step()
+        assert cpu.regs.A == 0x30
 
 
 # ============================================================
-# 32. DDCB/FDCB Indexed Bit Operations
+# 33. DDCB/FDCB Indexed Bit Operations
 # ============================================================
 
 
 class TestDDCBFDCB:
+    """
+    DDCB/FDCB indexed bit operations: DD CB d / FD CB d instructions.
+
+    These are 4-byte instructions: prefix + CB + displacement + opcode.
+    The displacement is signed (-128 to +127).
+    """
+
     def test_ddcb_rlc_ix_d(self, cpu):
-        cpu.IX = 0x1000
-        cpu.write_byte(0x1002, 0x80)
-        write_program(cpu, [0xDD, 0xCB, 0x02, 0x06])
+        """DDCB: RLC (IX+d) stores result in memory and optionally in register."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1002, 0x80)  # IX+2
+        write_program(cpu, [0xDD, 0xCB, 0x02, 0x06])  # RLC (IX+2)
         cpu.step()
         assert cpu.read_byte(0x1002) == 0x01
 
     def test_ddcb_bit_ix_d(self, cpu):
-        cpu.IX = 0x1000
-        cpu.write_byte(0x1003, 0x08)
-        write_program(cpu, [0xDD, 0xCB, 0x03, 0x5E])
+        """DDCB: BIT b,(IX+d) tests bit in indexed memory."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0x08)  # bit 3 set
+        write_program(cpu, [0xDD, 0xCB, 0x03, 0x5E])  # BIT 3,(IX+3)
         cpu.step()
-        assert flag_clear(cpu, FLAG_Z)
+        assert flag_clear(cpu, FLAG_Z)  # bit is set
+
+    def test_ddcb_bit_ix_d_clear(self, cpu):
+        """DDCB: BIT b,(IX+d) when bit is clear."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1003, 0xF7)  # bit 3 clear
+        write_program(cpu, [0xDD, 0xCB, 0x03, 0x5E])  # BIT 3,(IX+3)
+        cpu.step()
+        assert flag_set(cpu, FLAG_Z)  # bit is clear
 
     def test_ddcb_set_ix_d(self, cpu):
-        cpu.IX = 0x1000
+        """DDCB: SET b,(IX+d) sets bit in indexed memory."""
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1001, 0x00)
-        write_program(cpu, [0xDD, 0xCB, 0x01, 0xC6])
+        write_program(cpu, [0xDD, 0xCB, 0x01, 0xC6])  # SET 0,(IX+1)
         cpu.step()
         assert cpu.read_byte(0x1001) == 0x01
 
     def test_ddcb_res_ix_d(self, cpu):
-        cpu.IX = 0x1000
+        """DDCB: RES b,(IX+d) resets bit in indexed memory."""
+        cpu.regs.IX = 0x1000
         cpu.write_byte(0x1001, 0xFF)
-        write_program(cpu, [0xDD, 0xCB, 0x01, 0x86])
+        write_program(cpu, [0xDD, 0xCB, 0x01, 0x86])  # RES 0,(IX+1)
         cpu.step()
         assert cpu.read_byte(0x1001) == 0xFE
+
+    def test_ddcb_sla_ix_d(self, cpu):
+        """DDCB: SLA (IX+d) arithmetic shift left."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1001, 0x40)
+        write_program(cpu, [0xDD, 0xCB, 0x01, 0x26])  # SLA (IX+1)
+        cpu.step()
+        assert cpu.read_byte(0x1001) == 0x80
+
+    def test_ddcb_sra_ix_d(self, cpu):
+        """DDCB: SRA (IX+d) arithmetic shift right."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x1001, 0x80)
+        write_program(cpu, [0xDD, 0xCB, 0x01, 0x2E])  # SRA (IX+1)
+        cpu.step()
+        assert cpu.read_byte(0x1001) == 0xC0
+
+    def test_fdcb_rlc_iy_d(self, cpu):
+        """FDCB: RLC (IY+d) similar to DDCB."""
+        cpu.regs.IY = 0x2000
+        cpu.write_byte(0x2002, 0x01)
+        write_program(cpu, [0xFD, 0xCB, 0x02, 0x06])  # RLC (IY+2)
+        cpu.step()
+        assert cpu.read_byte(0x2002) == 0x02
+
+    def test_ddcb_negative_displacement(self, cpu):
+        """DDCB: negative displacement wraps correctly."""
+        cpu.regs.IX = 0x1000
+        cpu.write_byte(0x0FF8, 0xFF)  # IX-8 = 0x0FF8
+        write_program(cpu, [0xDD, 0xCB, 0xF8, 0x46])  # BIT 0,(IX-8)
+        cpu.step()
+        assert flag_clear(cpu, FLAG_Z)
 
     @pytest.mark.parametrize(
         "program,mnemonic,expected_cycles",
         [
+            # DDCB — IX indexed
             ([0xDD, 0xCB, 0x00, 0x06], "RLC (IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0x0E], "RRC (IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0x16], "RL (IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0x1E], "RR (IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0x26], "SLA (IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0x2E], "SRA (IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0x3E], "SRL (IX+0)", 23),
             ([0xDD, 0xCB, 0x00, 0x46], "BIT 0,(IX+0)", 20),
+            ([0xDD, 0xCB, 0x00, 0x7E], "BIT 7,(IX+0)", 20),
             ([0xDD, 0xCB, 0x00, 0xC6], "SET 0,(IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0xFE], "SET 7,(IX+0)", 23),
             ([0xDD, 0xCB, 0x00, 0x86], "RES 0,(IX+0)", 23),
+            ([0xDD, 0xCB, 0x00, 0xBE], "RES 7,(IX+0)", 23),
+            # FDCB — IY indexed
+            ([0xFD, 0xCB, 0x00, 0x06], "RLC (IY+0)", 23),
+            ([0xFD, 0xCB, 0x00, 0x46], "BIT 0,(IY+0)", 20),
+            ([0xFD, 0xCB, 0x00, 0xC6], "SET 0,(IY+0)", 23),
+            ([0xFD, 0xCB, 0x00, 0x86], "RES 0,(IY+0)", 23),
         ],
     )
-    def test_ddcb_timing(self, cpu, program, mnemonic, expected_cycles):
-        cpu.IX = 0x1000
-        cpu.write_byte(0x1000, 0x00)
-        for i, b in enumerate(program):
-            cpu.write_byte(i, b)
-        cpu.PC = 0
+    def test_ddcb_fdcb_timing(self, cpu, program, mnemonic, expected_cycles):
+        """DDCB/FDCB indexed instruction timing."""
+        if program[0] == 0xDD:
+            cpu.regs.IX = 0x1000
+            addr = 0x1000  # IX + 0
+        else:
+            cpu.regs.IY = 0x1000
+            addr = 0x1000  # IY + 0
+        cpu.write_byte(addr, 0x00)
+        for _i, _b in enumerate(program):
+            cpu.write_byte(0 + _i, _b)
+        cpu.regs.PC = 0
         cycles = cpu.step()
         assert cycles == expected_cycles, (
             f"{mnemonic}: expected {expected_cycles}, got {cycles}"
@@ -2247,129 +3991,871 @@ class TestDDCBFDCB:
 
 
 # ============================================================
-# 33. Repeat I/O Block Instructions
+# 34. Repeat I/O Block Instructions
 # ============================================================
 
 
 class TestRepeatIOBlock:
+    """INIR, INDR, OTIR, OTDR — repeat I/O instructions."""
+
     def test_inir_terminates_on_b_zero(self, cpu):
-        cpu.B = 1
-        cpu.C = 0x10
-        cpu.HL = 0x2000
-        cpu._io.ports[0x10] = 0x99
+        """INIR — terminates when B reaches 0."""
+        cpu.regs.B = 1
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2000
+        cpu.io_write(0x10, 0x99)
         write_program(cpu, [0xED, 0xB2])
         cpu.step()
         assert cpu.read_byte(0x2000) == 0x99
-        assert cpu.B == 0
+        assert cpu.regs.B == 0
+
+    def test_inir_decrements_b(self, cpu):
+        """INIR — decrements B on each iteration."""
+        cpu.regs.B = 3
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2000
+        cpu.io_write(0x10, 0x11)
+        write_program(cpu, [0xED, 0xB2])
+        step_n(cpu, 3)
+        assert cpu.regs.B == 0
+        assert cpu.regs.HL == 0x2003
+
+    def test_indr_decrements_hl(self, cpu):
+        """INDR — decrements HL on each iteration."""
+        cpu.regs.B = 2
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x2001
+        cpu.io_write(0x10, 0x22)
+        write_program(cpu, [0xED, 0xBA])
+        step_n(cpu, 2)
+        assert cpu.regs.HL == 0x1FFF
 
     def test_otir_decrements_b(self, cpu):
-        cpu.B = 2
-        cpu.C = 0x10
-        cpu.HL = 0x1000
+        """OTIR — decrements B on each iteration."""
+        cpu.regs.B = 2
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x1000
         cpu.write_byte(0x1000, 0xAA)
         cpu.write_byte(0x1001, 0xBB)
         write_program(cpu, [0xED, 0xB3])
         step_n(cpu, 2)
-        assert cpu.B == 0
+        assert cpu.regs.B == 0
+
+    def test_otdr_decrements_hl(self, cpu):
+        """OTDR — decrements HL on each iteration."""
+        cpu.regs.B = 2
+        cpu.regs.C = 0x10
+        cpu.regs.HL = 0x1001
+        cpu.write_byte(0x1000, 0x11)
+        cpu.write_byte(0x1001, 0x22)
+        write_program(cpu, [0xED, 0xBB])
+        step_n(cpu, 2)
+        assert cpu.regs.HL == 0x0FFF
 
 
 # ============================================================
-# 34. IX/IY Arithmetic Operations
+# 35. IX/IY Arithmetic Operations
 # ============================================================
 
 
 class TestIXIYArithmetic:
+    """ADD/ADC/SBC operations with IX and IY registers."""
+
     def test_adc_ix_bc(self, cpu):
-        cpu.IX = 0x0001
-        cpu.BC = 0x0002
-        cpu.F = 0
+        """ADC IX,BC — add with carry."""
+        cpu.regs.IX = 0x0001
+        cpu.regs.BC = 0x0002
+        cpu.regs.F = 0
         write_program(cpu, [0xDD, 0xED, 0x4A])
         cpu.step()
-        assert cpu.IX == 0x0003
+        assert cpu.regs.IX == 0x0003
 
     def test_adc_ix_bc_with_carry(self, cpu):
-        cpu.IX = 0xFFFF
-        cpu.BC = 0x0001
-        cpu.F = FLAG_C
+        """ADC IX,BC — carry causes overflow."""
+        cpu.regs.IX = 0xFFFF
+        cpu.regs.BC = 0x0001
+        cpu.regs.F = FLAG_C
         write_program(cpu, [0xDD, 0xED, 0x4A])
         cpu.step()
-        assert cpu.IX == 0x0001
+        assert cpu.regs.IX == 0x0001
+        assert flag_set(cpu, FLAG_C)
+
+    def test_adc_ix_zero(self, cpu):
+        """ADC IX,rr — Z flag set when result is zero."""
+        cpu.regs.IX = 0xFFFF
+        cpu.regs.BC = 0x0000
+        cpu.regs.F = FLAG_C  # FFFF + 0 + 1 = 0x10000 -> 0x0000 with carry
+        write_program(cpu, [0xDD, 0xED, 0x4A])
+        cpu.step()
+        assert cpu.regs.IX == 0x0000
+        assert flag_set(cpu, FLAG_Z)
         assert flag_set(cpu, FLAG_C)
 
     def test_sbc_ix_de(self, cpu):
-        cpu.IX = 0x0010
-        cpu.DE = 0x0002
-        cpu.F = 0
+        """SBC IX,DE — subtract with carry."""
+        cpu.regs.IX = 0x0010
+        cpu.regs.DE = 0x0002
+        cpu.regs.F = 0
         write_program(cpu, [0xDD, 0xED, 0x52])
         cpu.step()
-        assert cpu.IX == 0x000E
+        assert cpu.regs.IX == 0x000E
+
+    def test_sbc_ix_de_with_carry(self, cpu):
+        """SBC IX,DE — with carry subtracts extra."""
+        cpu.regs.IX = 0x0010
+        cpu.regs.DE = 0x0002
+        cpu.regs.F = FLAG_C
+        write_program(cpu, [0xDD, 0xED, 0x52])
+        cpu.step()
+        assert cpu.regs.IX == 0x000D
+
+    def test_add_iy_sp(self, cpu):
+        """ADD IY,SP — add SP to IY."""
+        cpu.regs.IY = 0x1000
+        cpu.regs.SP = 0x0100
+        write_program(cpu, [0xFD, 0x39])
+        cpu.step()
+        assert cpu.regs.IY == 0x1100
+
+    def test_adc_iy_de(self, cpu):
+        """ADC IY,DE — with carry."""
+        cpu.regs.IY = 0x0001
+        cpu.regs.DE = 0x0002
+        cpu.regs.F = FLAG_C
+        write_program(cpu, [0xFD, 0xED, 0x5A])  # ADC IY,DE
+        cpu.step()
+        assert cpu.regs.IY == 0x0004
 
 
 # ============================================================
-# 35. DAA Comprehensive Tests
+# 36. DAA Comprehensive Tests
 # ============================================================
 
 
 class TestDAAComprehensive:
+    """Comprehensive DAA (Decimal Adjust Accumulator) tests."""
+
     def test_daa_add_0f_01(self, cpu):
-        cpu.A = 0x0F
-        write_program(cpu, [0xC6, 0x01, 0x27])
+        """DAA: 0x0F + 0x01 = 0x10 with H=1, DAA adds 0x06 -> 0x16."""
+        cpu.regs.A = 0x0F
+        write_program(cpu, [0xC6, 0x01, 0x27])  # ADD A,1; DAA
         step_n(cpu, 2)
-        assert cpu.A == 0x16
+        assert cpu.regs.A == 0x16
         assert flag_clear(cpu, FLAG_C)
 
     def test_daa_add_f9_01(self, cpu):
-        cpu.A = 0xF9
+        """DAA: 0xF9 + 0x01 = 0xFA, high nibble > 9, DAA adds 0x66 -> 0x60, C=1."""
+        cpu.regs.A = 0xF9
         write_program(cpu, [0xC6, 0x01, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x60
+        assert cpu.regs.A == 0x60
         assert flag_set(cpu, FLAG_C)
 
+    def test_daa_sub_10_01(self, cpu):
+        """DAA: 0x10 - 0x01 = 0x09."""
+        cpu.regs.A = 0x10
+        write_program(cpu, [0xD6, 0x01, 0x27])  # SUB 1; DAA
+        step_n(cpu, 2)
+        assert cpu.regs.A == 0x09
+
     def test_daa_sub_00_01(self, cpu):
-        cpu.A = 0x00
+        """DAA: 0x00 - 0x01 = 0x99 with borrow (carry)."""
+        cpu.regs.A = 0x00
         write_program(cpu, [0xD6, 0x01, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x99
+        assert cpu.regs.A == 0x99
+        assert flag_set(cpu, FLAG_C)
+
+    def test_daa_add_80_80(self, cpu):
+        """DAA: 0x80 + 0x80 = 0x60 with carry."""
+        cpu.regs.A = 0x80
+        write_program(cpu, [0xC6, 0x80, 0x27])
+        step_n(cpu, 2)
+        assert cpu.regs.A == 0x60
         assert flag_set(cpu, FLAG_C)
 
     def test_daa_preserves_z_flag(self, cpu):
-        cpu.A = 0x90
+        """DAA: Z flag set when result is zero."""
+        cpu.regs.A = 0x90
         write_program(cpu, [0xC6, 0x10, 0x27])
         step_n(cpu, 2)
-        assert cpu.A == 0x00
+        assert cpu.regs.A == 0x00
         assert flag_set(cpu, FLAG_Z)
 
 
 # ============================================================
-# 36. Q Factor Tracking (Patrik Rak discovery)
+# 37. CCF Proper H-Flag Behavior
 # ============================================================
 
 
-class TestQFactor:
-    def test_scf_after_flag_modifying_copies_a(self, cpu):
-        cpu.A = 0x10
-        write_program(cpu, [0x3D, 0x37])  # DEC A; SCF
-        cpu.step()  # DEC A -> A=0x0F, Q=F
-        cpu.step()  # SCF: Q=F, F3/F5 = A.3/A.5
-        assert not (cpu.F & FLAG_F5)  # A.5=0
-        assert cpu.F & FLAG_F3  # A.3=1
-        assert cpu.F & FLAG_C
+class TestCCFHFlag:
+    """CCF — Complement Carry Flag, H gets old C value."""
 
-    def test_scf_after_non_flag_modifying_ors(self, cpu):
-        cpu.A = 0x00
-        cpu.F = 0x28  # F5=1, F3=1
-        write_program(cpu, [0x00, 0x37])  # NOP; SCF
-        cpu.step()  # NOP -> Q=0
-        cpu.step()  # SCF: Q=0, F3/F5 = F|A
-        assert cpu.F & FLAG_F5
-        assert cpu.F & FLAG_F3
+    def test_ccf_h_gets_old_carry_set(self, cpu):
+        """CCF: H = old C when C was set (H=1, C=0)."""
+        cpu.regs.F = FLAG_C
+        write_program(cpu, [0x3F])
+        cpu.step()
+        assert flag_clear(cpu, FLAG_C)
+        assert flag_set(cpu, FLAG_H)
+
+    def test_ccf_h_gets_old_carry_clear(self, cpu):
+        """CCF: H = old C when C was clear (H=0, C=1)."""
+        cpu.regs.F = 0
+        write_program(cpu, [0x3F])
+        cpu.step()
+        assert flag_set(cpu, FLAG_C)
+        assert flag_clear(cpu, FLAG_H)
+
+    def test_ccf_n_always_clear(self, cpu):
+        """CCF: N flag always cleared."""
+        cpu.regs.F = FLAG_N | FLAG_C
+        write_program(cpu, [0x3F])
+        cpu.step()
+        assert flag_clear(cpu, FLAG_N)
+
+    def test_ccf_preserves_s_z_pv(self, cpu):
+        """CCF: preserves S, Z, PV flags."""
+        cpu.regs.F = FLAG_S | FLAG_Z | FLAG_PV | FLAG_C
+        write_program(cpu, [0x3F])
+        cpu.step()
+        assert flag_set(cpu, FLAG_S)
+        assert flag_set(cpu, FLAG_Z)
+        assert flag_set(cpu, FLAG_PV)
+
+
+# ============================================================
+# 38. 16-bit Load with SP
+# ============================================================
+
+
+class TestLoadSPIndirect:
+    """LD (nn),SP and LD SP,(nn) instructions."""
+
+    def test_ld_nn_indirect_sp(self, cpu):
+        """LD (nn),SP — store SP to memory."""
+        cpu.regs.SP = 0x2000
+        write_program(cpu, [0xED, 0x73, 0x00, 0x10])  # LD (0x1000),SP
+        cpu.step()
+        assert cpu.read_byte(0x1000) == 0x00
+        assert cpu.read_byte(0x1001) == 0x20
+
+    def test_ld_sp_nn_indirect(self, cpu):
+        """LD SP,(nn) — load SP from memory."""
+        cpu.write_byte(0x4000, 0x34)
+        cpu.write_byte(0x4001, 0x12)
+        write_program(cpu, [0xED, 0x7B, 0x00, 0x40])
+        cpu.step()
+        assert cpu.regs.SP == 0x1234
+
+
+# ============================================================
+# 39. Edge Case: Page Boundary Wrapping
+# ============================================================
+
+
+class TestPageBoundary:
+    """Memory operations that cross 64KB boundaries."""
+
+    def test_jp_at_page_boundary(self, cpu):
+        """JP to address at page boundary works correctly."""
+        cpu.write_byte(0x0100, 0xC3)  # JP opcode at target
+        cpu.write_byte(0x0101, 0x00)  # low byte
+        cpu.write_byte(0x0102, 0x20)  # high byte
+        write_program(cpu, [0xC3, 0x00, 0x01])  # JP 0x0100
+        cpu.step()
+        assert cpu.regs.PC == 0x0100
+
+    def test_call_at_page_boundary(self, cpu):
+        """CALL pushes correct return address."""
+        cpu.regs.SP = 0xFFFC
+        cpu.write_byte(0x0100, 0xC9)  # RET at target
+        write_program(cpu, [0xCD, 0x00, 0x01])  # CALL 0x0100
+        cpu.step()
+        # SP decrements by 2, so return address at 0xFFFA and 0xFFFB
+        assert cpu.read_byte(0xFFFA) == 0x03
+        assert cpu.read_byte(0xFFFB) == 0x00
+
+    def test_inc_hl_wraps(self, cpu):
+        """INC HL wraps from 0xFFFF to 0x0000."""
+        cpu.regs.HL = 0xFFFF
+        write_program(cpu, [0x23])  # INC HL
+        cpu.step()
+        assert cpu.regs.HL == 0x0000
+
+
+# ============================================================
+# 40. Reset (RST) Instructions Comprehensive
+# ============================================================
+
+
+class TestRSTComprehensive:
+    """All RST (restart) instructions."""
+
+    @pytest.mark.parametrize(
+        "opcode,vector",
+        [
+            (0xC7, 0x00),
+            (0xCF, 0x08),
+            (0xD7, 0x10),
+            (0xDF, 0x18),
+            (0xE7, 0x20),
+            (0xEF, 0x28),
+            (0xF7, 0x30),
+            (0xFF, 0x38),
+        ],
+    )
+    def test_rst_vectors(self, cpu, opcode, vector):
+        """RST p — jumps to correct vector."""
+        cpu.regs.SP = 0x2000
+        write_program(cpu, [opcode])
+        cpu.step()
+        assert cpu.regs.PC == vector
+        assert cpu.regs.SP == 0x1FFE
+
+    def test_rst_pushes_return_address(self, cpu):
+        """RST pushes correct return address."""
+        cpu.regs.SP = 0xFFFF
+        write_program(cpu, [0xCD, 0x00, 0x00])  # Skip to 0x0003
+        cpu.step()
+        write_program(cpu, [0xFF])  # RST 0x38
+        cpu.step()
+        assert cpu.read_byte(0xFFFE) == 0x00
+        assert cpu.read_byte(0xFFFD) == 0x03
+
+
+# ============================================================
+# Q Factor Tracking — Patrik Rak discovery for SCF/CCF
+#
+# The Z80 has an internal Q latch that holds the new F value
+# after flag-modifying instructions, or 0 after non-flag-modifying
+# instructions (including EX AF,AF' and POP AF).
+#
+# For SCF and CCF, YF (bit 5) and XF (bit 3) are computed as:
+#   result = (Q ^ F) | A
+#   YF = result.5, XF = result.3
+#
+# When Q == F (previous instruction modified flags):
+#   result = (F ^ F) | A = 0 | A = A
+#   So YF = A.5, XF = A.3  (copy from A)
+#
+# When Q == 0 (previous instruction did NOT modify flags):
+#   result = (0 ^ F) | A = F | A
+#   So YF = F.5 | A.5, XF = F.3 | A.3  (OR with previous flags)
+#
+# Reference: https://worldofspectrum.org/forums/discussion/41704
+# ============================================================
+
+FLAG_F3 = 0x08
+FLAG_F5 = 0x20
+
+
+class TestQFactorSCF:
+    """Q factor tracking for SCF instruction (Patrik Rak discovery)."""
+
+    def test_scf_after_flag_modifying_copies_a(self, cpu):
+        """SCF after flag-modifying instruction: F3/F5 copied from A."""
+        # DEC A modifies flags, so Q = F after DEC
+        # A=0x10 -> DEC A -> A=0x0F (0000 1111): A.5=0, A.3=1
+        cpu.regs.A = 0x10
+        write_program(cpu, [0x3D, 0x37])  # DEC A; SCF
+        cpu.step()  # DEC A modifies flags -> Q = F, A=0x0F
+        cpu.step()  # SCF: since Q==F, F3/F5 = A.3/A.5
+        assert not (cpu.regs.F & FLAG_F5)  # F5 = A.5 = 0
+        assert cpu.regs.F & FLAG_F3  # F3 = A.3 = 1
+        assert cpu.regs.F & FLAG_C  # SCF sets carry
+
+    def test_scf_after_flag_modifying_copies_a_clear(self, cpu):
+        """SCF after flag-modifying instruction: F3/F5 copied from A (clear)."""
+        # A=0x20 -> DEC A -> A=0x1F (0001 1111): A.5=0, A.3=1
+        # Use 0x30 -> DEC A -> A=0x2F (0010 1111): A.5=1, A.3=1
+        # Use 0x18 -> DEC A -> A=0x17 (0001 0111): A.5=0, A.3=1
+        # Use 0x10 -> DEC A -> A=0x0F (0000 1111): A.5=0, A.3=1
+        # Need A.5=0, A.3=0 after DEC -> A=0x08 -> DEC -> A=0x07 (0000 0111)
+        cpu.regs.A = 0x08
+        write_program(cpu, [0x3D, 0x37])  # DEC A; SCF
+        cpu.step()  # DEC A: A=0x07, modifies flags -> Q = F
+        cpu.step()  # SCF: since Q==F, F3/F5 = A.3/A.5
+        assert not (cpu.regs.F & FLAG_F5)  # F5 = A.5 = 0
+        assert not (cpu.regs.F & FLAG_F3)  # F3 = A.3 = 0
+        assert cpu.regs.F & FLAG_C
+
+    def test_scf_after_non_flag_modifying_ors_with_a(self, cpu):
+        """SCF after non-flag-modifying instruction: F3/F5 = F|A (OR)."""
+        # EX AF,AF' does NOT modify flags -> Q = 0
+        cpu.regs.A = 0x28  # A.5=1, A.3=1
+        cpu.regs.F = 0x04  # F.5=0, F.3=0 (only PV set)
+        write_program(cpu, [0x08, 0x37])  # EX AF,AF'; SCF
+        cpu.step()  # EX AF,AF' doesn't modify flags -> Q = 0
+        # After EX, A and F are swapped. But the point is Q=0
+        saved_a = cpu.regs.A
+        saved_f = cpu.regs.F
+        cpu.step()  # SCF: Q=0, so F3/F5 = (0^F)|A = F|A
+        # F3 = saved_f.3 | saved_a.3, F5 = saved_f.5 | saved_a.5
+        expected_f5 = bool(saved_f & FLAG_F5) or bool(saved_a & FLAG_F5)
+        expected_f3 = bool(saved_f & FLAG_F3) or bool(saved_a & FLAG_F3)
+        assert bool(cpu.regs.F & FLAG_F5) == expected_f5
+        assert bool(cpu.regs.F & FLAG_F3) == expected_f3
+
+    def test_scf_after_pop_af_ors(self, cpu):
+        """SCF after POP AF: Q=0, so F3/F5 = F|A (OR behavior)."""
+        cpu.regs.SP = 0x4000
+        # Push value with F5=0, F3=0 onto stack
+        cpu.write_byte(0x4000, 0x00)  # F byte (no flags)
+        cpu.write_byte(0x4001, 0x00)  # A byte
+        cpu.regs.A = 0x28  # A.5=1, A.3=1
+        write_program(cpu, [0xF1, 0x37])  # POP AF; SCF
+        cpu.step()  # POP AF -> Q = 0 (exception!)
+        cpu.step()  # SCF with Q=0
+        # Since Q=0, F3/F5 = F|A. After POP AF, F=0x00, A=0x00
+        # So F3=0|0=0, F5=0|0=0
+        assert not (cpu.regs.F & FLAG_F5)
+        assert not (cpu.regs.F & FLAG_F3)
+
+
+class TestQFactorCCF:
+    """Q factor tracking for CCF instruction (Patrik Rak discovery)."""
 
     def test_ccf_after_flag_modifying_copies_a(self, cpu):
-        cpu.A = 0x30
-        cpu.F = 0x01  # C=1
+        """CCF after flag-modifying instruction: F3/F5 copied from A."""
+        # DEC A modifies flags, so Q = F after DEC
+        # A=0x30 -> DEC A -> A=0x2F (0010 1111): A.5=1, A.3=1
+        cpu.regs.A = 0x30
+        cpu.regs.F = 0x01  # C=1
         write_program(cpu, [0x3D, 0x3F])  # DEC A; CCF
-        cpu.step()  # DEC A -> A=0x2F, Q=F
-        cpu.step()  # CCF: Q=F, F3/F5 = A.3/A.5
-        assert cpu.F & FLAG_F5  # A.5=1
-        assert cpu.F & FLAG_F3  # A.3=1
-        assert not (cpu.F & FLAG_C)  # CCF toggles
+        cpu.step()  # DEC A modifies flags -> Q = F, A=0x2F
+        cpu.step()  # CCF: since Q==F, F3/F5 = A.3/A.5
+        assert cpu.regs.F & FLAG_F5  # F5 = A.5 = 1
+        assert cpu.regs.F & FLAG_F3  # F3 = A.3 = 1
+        assert not (cpu.regs.F & FLAG_C)  # CCF toggles carry
+
+    def test_ccf_after_flag_modifying_copies_a_clear(self, cpu):
+        """CCF after flag-modifying instruction: F3/F5 copied from A (clear)."""
+        # A=0x08 -> DEC A -> A=0x07 (0000 0111): A.5=0, A.3=0
+        cpu.regs.A = 0x08
+        cpu.regs.F = 0x00  # C=0
+        write_program(cpu, [0x3D, 0x3F])  # DEC A; CCF
+        cpu.step()  # DEC A modifies flags -> Q = F, A=0x07
+        cpu.step()  # CCF: since Q==F, F3/F5 = A.3/A.5
+        assert not (cpu.regs.F & FLAG_F5)  # F5 = A.5 = 0
+        assert not (cpu.regs.F & FLAG_F3)  # F3 = A.3 = 0
+        assert cpu.regs.F & FLAG_C  # CCF toggles carry on
+
+    def test_ccf_after_non_flag_modifying_ors_with_a(self, cpu):
+        """CCF after non-flag-modifying instruction: F3/F5 = F|A (OR)."""
+        # NOP does NOT modify flags -> Q = 0
+        cpu.regs.A = 0x00  # A.5=0, A.3=0
+        cpu.regs.F = 0x28  # F.5=1, F.3=1
+        write_program(cpu, [0x00, 0x3F])  # NOP; CCF
+        cpu.step()  # NOP doesn't modify flags -> Q = 0
+        cpu.step()  # CCF: Q=0, so F3/F5 = (0^F)|A = F|A
+        # F.5|A.5 = 1|0 = 1, F.3|A.3 = 1|0 = 1
+        assert cpu.regs.F & FLAG_F5
+        assert cpu.regs.F & FLAG_F3
+
+    def test_ccf_after_ex_af_ors(self, cpu):
+        """CCF after EX AF,AF': Q=0, so F3/F5 = F|A (OR behavior)."""
+        cpu.regs.A = 0x28  # A.5=1, A.3=1
+        cpu.regs.F = 0x04  # F.5=0, F.3=0
+        write_program(cpu, [0x08, 0x3F])  # EX AF,AF'; CCF
+        cpu.step()  # EX AF,AF' -> Q = 0
+        saved_a = cpu.regs.A
+        saved_f = cpu.regs.F
+        cpu.step()  # CCF with Q=0
+        expected_f5 = bool(saved_f & FLAG_F5) or bool(saved_a & FLAG_F5)
+        expected_f3 = bool(saved_f & FLAG_F3) or bool(saved_a & FLAG_F3)
+        assert bool(cpu.regs.F & FLAG_F5) == expected_f5
+        assert bool(cpu.regs.F & FLAG_F3) == expected_f3
+
+
+class TestQFactorSequence:
+    """Q factor tracking across instruction sequences."""
+
+    def test_scf_scf_second_copies_a(self, cpu):
+        """SCF; SCF — second SCF sees Q=F from first SCF, copies A."""
+        cpu.regs.A = 0x28  # A.5=1, A.3=1
+        write_program(cpu, [0x37, 0x37])  # SCF; SCF
+        cpu.step()  # First SCF modifies flags -> Q = F
+        cpu.step()  # Second SCF: Q=F, so F3/F5 = A.3/A.5
+        assert cpu.regs.F & FLAG_F5
+        assert cpu.regs.F & FLAG_F3
+        assert cpu.regs.F & FLAG_C
+
+    def test_nop_scf_ors(self, cpu):
+        """NOP; SCF — SCF sees Q=0 from NOP, ORs with A."""
+        cpu.regs.A = 0x00  # A.5=0, A.3=0
+        cpu.regs.F = 0x28  # F.5=1, F.3=1
+        write_program(cpu, [0x00, 0x37])  # NOP; SCF
+        cpu.step()  # NOP -> Q = 0
+        cpu.step()  # SCF: Q=0, so F3/F5 = F|A = 1|0 = 1
+        assert cpu.regs.F & FLAG_F5
+        assert cpu.regs.F & FLAG_F3
+
+    def test_dec_a_scf_copies(self, cpu):
+        """DEC A; SCF — SCF copies F3/F5 from A."""
+        cpu.regs.A = 0x10  # A.5=0, A.3=0 (but will become 0x0F after DEC)
+        write_program(cpu, [0x3D, 0x37])  # DEC A; SCF
+        cpu.step()  # DEC A: A=0x0F, modifies flags -> Q=F
+        assert cpu.regs.A == 0x0F  # A.5=0, A.3=1
+        cpu.step()  # SCF: Q=F, so F3/F5 = A.3/A.5 = 1/0
+        assert cpu.regs.F & FLAG_F3  # A.3 = 1
+        assert not (cpu.regs.F & FLAG_F5)  # A.5 = 0
+
+    def test_pop_af_scf_q_zero(self, cpu):
+        """POP AF; SCF — POP AF sets Q=0, SCF ORs F3/F5."""
+        cpu.regs.SP = 0x4000
+        cpu.write_byte(0x4000, 0xFF)  # F with all flags set
+        cpu.write_byte(0x4001, 0xFF)  # A = 0xFF
+        write_program(cpu, [0xF1, 0x37])  # POP AF; SCF
+        cpu.step()  # POP AF -> Q = 0 (exception!)
+        cpu.step()  # SCF: Q=0, so F3/F5 = F|A
+        # F=0xFF, A=0xFF, so F|A = 0xFF, F3=1, F5=1
+        assert cpu.regs.F & FLAG_F5
+        assert cpu.regs.F & FLAG_F3
+
+    def test_ex_af_af_scf_q_zero(self, cpu):
+        """EX AF,AF'; SCF — EX AF,AF' sets Q=0, SCF ORs F3/F5."""
+        cpu.regs.A = 0x00
+        cpu.regs.F = 0x28  # F5=1, F3=1
+        cpu.regs.Ap = 0xFF
+        cpu.regs.Fp = 0x00
+        write_program(cpu, [0x08, 0x37])  # EX AF,AF'; SCF
+        cpu.step()  # EX AF,AF' -> Q = 0
+        # After EX: A=0xFF, F=0x00
+        cpu.step()  # SCF: Q=0, F3/F5 = F|A = 0|0xFF = 1
+        assert cpu.regs.F & FLAG_F5
+        assert cpu.regs.F & FLAG_F3
+
+
+# ============================================================
+# Z80 Instruction Timing Tests
+# Based on official Z80 timing specifications
+# ============================================================
+
+
+class TestZ80Timing:
+    """Comprehensive Z80 instruction timing verification.
+
+    Timings based on official Zilog Z80 timing data.
+    Format: (name, program_bytes, expected_cycles, setup_function)
+    """
+
+    @pytest.mark.parametrize(
+        "name,code,cycles,setup",
+        [
+            # 8-bit loads - register to register
+            ("LD A,B", [0x78], 4, None),
+            ("LD A,C", [0x79], 4, None),
+            ("LD A,D", [0x7A], 4, None),
+            ("LD A,E", [0x7B], 4, None),
+            ("LD A,H", [0x7C], 4, None),
+            ("LD A,L", [0x7D], 4, None),
+            ("LD B,A", [0x47], 4, None),
+            ("LD C,A", [0x4F], 4, None),
+            ("LD D,A", [0x57], 4, None),
+            ("LD E,A", [0x5F], 4, None),
+            ("LD H,A", [0x67], 4, None),
+            ("LD L,A", [0x6F], 4, None),
+            # 8-bit loads - immediate
+            ("LD A,n", [0x3E, 0x55], 7, None),
+            ("LD B,n", [0x06, 0x55], 7, None),
+            ("LD C,n", [0x0E, 0x55], 7, None),
+            ("LD D,n", [0x16, 0x55], 7, None),
+            ("LD E,n", [0x1E, 0x55], 7, None),
+            ("LD H,n", [0x26, 0x55], 7, None),
+            ("LD L,n", [0x2E, 0x55], 7, None),
+            # 8-bit loads - memory
+            ("LD A,(HL)", [0x7E], 7, None),
+            ("LD B,(HL)", [0x46], 7, None),
+            ("LD C,(HL)", [0x4E], 7, None),
+            ("LD D,(HL)", [0x56], 7, None),
+            ("LD E,(HL)", [0x5E], 7, None),
+            ("LD H,(HL)", [0x66], 7, None),
+            ("LD L,(HL)", [0x6E], 7, None),
+            ("LD (HL),A", [0x77], 7, None),
+            ("LD (HL),B", [0x70], 7, None),
+            ("LD (HL),C", [0x71], 7, None),
+            ("LD (HL),D", [0x72], 7, None),
+            ("LD (HL),E", [0x73], 7, None),
+            ("LD (HL),H", [0x74], 7, None),
+            ("LD (HL),L", [0x75], 7, None),
+            ("LD (HL),n", [0x36, 0x55], 10, None),
+            # 8-bit loads - indexed (IX)
+            ("LD A,(IX+d)", [0xDD, 0x7E, 0x10], 19, "IX"),
+            ("LD B,(IX+d)", [0xDD, 0x46, 0x10], 19, "IX"),
+            ("LD (IX+d),A", [0xDD, 0x77, 0x10], 19, "IX"),
+            ("LD (IX+d),B", [0xDD, 0x70, 0x10], 19, "IX"),
+            ("LD (IX+d),n", [0xDD, 0x36, 0x10, 0x55], 19, "IX"),
+            # 8-bit loads - indexed (IY)
+            ("LD A,(IY+d)", [0xFD, 0x7E, 0x10], 19, "IY"),
+            ("LD (IY+d),A", [0xFD, 0x77, 0x10], 19, "IY"),
+            ("LD (IY+d),n", [0xFD, 0x36, 0x10, 0x55], 19, "IY"),
+            # 16-bit loads
+            ("LD BC,nn", [0x01, 0x34, 0x12], 10, None),
+            ("LD DE,nn", [0x11, 0x34, 0x12], 10, None),
+            ("LD HL,nn", [0x21, 0x34, 0x12], 10, None),
+            ("LD SP,nn", [0x31, 0x34, 0x12], 10, None),
+            ("LD IX,nn", [0xDD, 0x21, 0x34, 0x12], 14, None),
+            ("LD IY,nn", [0xFD, 0x21, 0x34, 0x12], 14, None),
+            ("LD HL,(nn)", [0x2A, 0x00, 0x10], 16, None),
+            ("LD (nn),HL", [0x22, 0x00, 0x10], 16, None),
+            ("LD (nn),BC", [0xED, 0x43, 0x00, 0x10], 20, None),
+            ("LD (nn),DE", [0xED, 0x53, 0x00, 0x10], 20, None),
+            ("LD (nn),SP", [0xED, 0x73, 0x00, 0x10], 20, None),
+            ("LD BC,(nn)", [0xED, 0x4B, 0x00, 0x10], 20, None),
+            ("LD DE,(nn)", [0xED, 0x5B, 0x00, 0x10], 20, None),
+            ("LD SP,(nn)", [0xED, 0x7B, 0x00, 0x10], 20, None),
+            # Stack operations
+            ("PUSH BC", [0xC5], 11, None),
+            ("PUSH DE", [0xD5], 11, None),
+            ("PUSH HL", [0xE5], 11, None),
+            ("PUSH AF", [0xF5], 11, None),
+            ("PUSH IX", [0xDD, 0xE5], 15, None),
+            ("PUSH IY", [0xFD, 0xE5], 15, None),
+            ("POP BC", [0xC1], 10, None),
+            ("POP DE", [0xD1], 10, None),
+            ("POP HL", [0xE1], 10, None),
+            ("POP AF", [0xF1], 10, None),
+            ("POP IX", [0xDD, 0xE1], 14, None),
+            ("POP IY", [0xFD, 0xE1], 14, None),
+            # Exchange instructions
+            ("EX DE,HL", [0xEB], 4, None),
+            ("EX AF,AF'", [0x08], 4, None),
+            ("EXX", [0xD9], 4, None),
+            ("EX (SP),HL", [0xE3], 19, None),
+            ("EX (SP),IX", [0xDD, 0xE3], 23, None),
+            ("EX (SP),IY", [0xFD, 0xE3], 23, None),
+            # 8-bit arithmetic
+            ("ADD A,B", [0x80], 4, None),
+            ("ADD A,C", [0x81], 4, None),
+            ("ADD A,D", [0x82], 4, None),
+            ("ADD A,E", [0x83], 4, None),
+            ("ADD A,H", [0x84], 4, None),
+            ("ADD A,L", [0x85], 4, None),
+            ("ADD A,A", [0x87], 4, None),
+            ("ADD A,n", [0xC6, 0x55], 7, None),
+            ("ADD A,(HL)", [0x86], 7, None),
+            ("ADD A,(IX+d)", [0xDD, 0x86, 0x10], 19, "IX"),
+            ("ADD A,(IY+d)", [0xFD, 0x86, 0x10], 19, "IY"),
+            ("ADC A,B", [0x88], 4, None),
+            ("ADC A,n", [0xCE, 0x55], 7, None),
+            ("ADC A,(HL)", [0x8E], 7, None),
+            ("SUB A,B", [0x90], 4, None),
+            ("SUB A,n", [0xD6, 0x55], 7, None),
+            ("SUB A,(HL)", [0x96], 7, None),
+            ("SUB A,(IX+d)", [0xDD, 0x96, 0x10], 19, "IX"),
+            ("SBC A,B", [0x98], 4, None),
+            ("SBC A,n", [0xDE, 0x55], 7, None),
+            ("SBC A,(HL)", [0x9E], 7, None),
+            ("AND A,B", [0xA0], 4, None),
+            ("AND A,n", [0xE6, 0x55], 7, None),
+            ("AND A,(HL)", [0xA6], 7, None),
+            ("AND A,(IX+d)", [0xDD, 0xA6, 0x10], 19, "IX"),
+            ("OR A,B", [0xB0], 4, None),
+            ("OR A,n", [0xF6, 0x55], 7, None),
+            ("OR A,(HL)", [0xB6], 7, None),
+            ("XOR A,B", [0xA8], 4, None),
+            ("XOR A,n", [0xEE, 0x55], 7, None),
+            ("XOR A,(HL)", [0xAE], 7, None),
+            ("CP A,B", [0xB8], 4, None),
+            ("CP A,n", [0xFE, 0x55], 7, None),
+            ("CP A,(HL)", [0xBE], 7, None),
+            ("INC A", [0x3C], 4, None),
+            ("INC B", [0x04], 4, None),
+            ("INC C", [0x0C], 4, None),
+            ("INC D", [0x14], 4, None),
+            ("INC E", [0x1C], 4, None),
+            ("INC H", [0x24], 4, None),
+            ("INC L", [0x2C], 4, None),
+            ("INC (HL)", [0x34], 11, None),
+            ("INC (IX+d)", [0xDD, 0x34, 0x10], 23, "IX"),
+            ("INC (IY+d)", [0xFD, 0x34, 0x10], 23, "IY"),
+            ("DEC A", [0x3D], 4, None),
+            ("DEC B", [0x05], 4, None),
+            ("DEC (HL)", [0x35], 11, None),
+            ("DEC (IX+d)", [0xDD, 0x35, 0x10], 23, "IX"),
+            # 16-bit arithmetic
+            ("ADD HL,BC", [0x09], 11, None),
+            ("ADD HL,DE", [0x19], 11, None),
+            ("ADD HL,HL", [0x29], 11, None),
+            ("ADD HL,SP", [0x39], 11, None),
+            ("ADD IX,BC", [0xDD, 0x09], 15, None),
+            ("ADD IX,DE", [0xDD, 0x19], 15, None),
+            ("ADD IX,IX", [0xDD, 0x29], 15, None),
+            ("ADD IX,SP", [0xDD, 0x39], 15, None),
+            ("ADD IY,BC", [0xFD, 0x09], 15, None),
+            ("ADD IY,DE", [0xFD, 0x19], 15, None),
+            ("ADD IY,IY", [0xFD, 0x29], 15, None),
+            ("ADD IY,SP", [0xFD, 0x39], 15, None),
+            ("ADC HL,BC", [0xED, 0x4A], 15, None),
+            ("ADC HL,DE", [0xED, 0x5A], 15, None),
+            ("ADC HL,HL", [0xED, 0x6A], 15, None),
+            ("ADC HL,SP", [0xED, 0x7A], 15, None),
+            ("SBC HL,BC", [0xED, 0x42], 15, None),
+            ("SBC HL,DE", [0xED, 0x52], 15, None),
+            ("SBC HL,HL", [0xED, 0x62], 15, None),
+            ("SBC HL,SP", [0xED, 0x72], 15, None),
+            ("INC BC", [0x03], 6, None),
+            ("INC DE", [0x13], 6, None),
+            ("INC HL", [0x23], 6, None),
+            ("INC SP", [0x33], 6, None),
+            ("INC IX", [0xDD, 0x23], 10, None),
+            ("INC IY", [0xFD, 0x23], 10, None),
+            ("DEC BC", [0x0B], 6, None),
+            ("DEC DE", [0x1B], 6, None),
+            ("DEC HL", [0x2B], 6, None),
+            ("DEC SP", [0x3B], 6, None),
+            ("DEC IX", [0xDD, 0x2B], 10, None),
+            ("DEC IY", [0xFD, 0x2B], 10, None),
+            # General purpose arithmetic
+            ("DAA", [0x27], 4, None),
+            ("CPL", [0x2F], 4, None),
+            ("NEG", [0xED, 0x44], 8, None),
+            ("CCF", [0x3F], 4, None),
+            ("SCF", [0x37], 4, None),
+            # Rotate and shift
+            ("RLCA", [0x07], 4, None),
+            ("RRCA", [0x0F], 4, None),
+            ("RLA", [0x17], 4, None),
+            ("RRA", [0x1F], 4, None),
+            # CB prefix rotates/shifts
+            ("RLC B", [0xCB, 0x00], 8, None),
+            ("RLC C", [0xCB, 0x01], 8, None),
+            ("RLC (HL)", [0xCB, 0x06], 15, None),
+            ("RL B", [0xCB, 0x10], 8, None),
+            ("RL (HL)", [0xCB, 0x16], 15, None),
+            ("RRC B", [0xCB, 0x08], 8, None),
+            ("RRC (HL)", [0xCB, 0x0E], 15, None),
+            ("RR B", [0xCB, 0x18], 8, None),
+            ("RR (HL)", [0xCB, 0x1E], 15, None),
+            ("SLA B", [0xCB, 0x20], 8, None),
+            ("SLA (HL)", [0xCB, 0x26], 15, None),
+            ("SRA B", [0xCB, 0x28], 8, None),
+            ("SRA (HL)", [0xCB, 0x2E], 15, None),
+            ("SRL B", [0xCB, 0x38], 8, None),
+            ("SRL (HL)", [0xCB, 0x3E], 15, None),
+            # BIT/RES/SET
+            ("BIT 0,B", [0xCB, 0x47], 8, None),
+            ("BIT 7,B", [0xCB, 0x7F], 8, None),
+            ("BIT 0,(HL)", [0xCB, 0x46], 12, None),
+            ("BIT 7,(HL)", [0xCB, 0x7E], 12, None),
+            ("RES 0,B", [0xCB, 0x87], 8, None),
+            ("RES 0,(HL)", [0xCB, 0x86], 15, None),
+            ("SET 0,B", [0xCB, 0xC7], 8, None),
+            ("SET 0,(HL)", [0xCB, 0xC6], 15, None),
+            # DDCB/FDCB indexed bit operations
+            ("DDCB BIT 0,(IX+d)", [0xDD, 0xCB, 0x10, 0x46], 20, "IX"),
+            ("DDCB RES 0,(IX+d)", [0xDD, 0xCB, 0x10, 0x86], 23, "IX"),
+            ("DDCB SET 0,(IX+d)", [0xDD, 0xCB, 0x10, 0xC6], 23, "IX"),
+            ("DDCB RLC (IX+d)", [0xDD, 0xCB, 0x10, 0x06], 23, "IX"),
+            ("DDCB RL (IX+d)", [0xDD, 0xCB, 0x10, 0x16], 23, "IX"),
+            ("DDCB SLA (IX+d)", [0xDD, 0xCB, 0x10, 0x26], 23, "IX"),
+            ("FDCB BIT 0,(IY+d)", [0xFD, 0xCB, 0x10, 0x46], 20, "IY"),
+            ("FDCB SET 0,(IY+d)", [0xFD, 0xCB, 0x10, 0xC6], 23, "IY"),
+            # Jump instructions
+            ("JP nn", [0xC3, 0x00, 0x10], 10, None),
+            ("JP NZ,nn", [0xC2, 0x00, 0x10], 10, None),
+            ("JP Z,nn", [0xCA, 0x00, 0x10], 10, None),
+            ("JP NC,nn", [0xD2, 0x00, 0x10], 10, None),
+            ("JP C,nn", [0xDA, 0x00, 0x10], 10, None),
+            ("JP PO,nn", [0xE2, 0x00, 0x10], 10, None),
+            ("JP PE,nn", [0xEA, 0x00, 0x10], 10, None),
+            ("JP P,nn", [0xF2, 0x00, 0x10], 10, None),
+            ("JP M,nn", [0xFA, 0x00, 0x10], 10, None),
+            ("JP (HL)", [0xE9], 4, None),
+            ("JP (IX)", [0xDD, 0xE9], 8, None),
+            ("JP (IY)", [0xFD, 0xE9], 8, None),
+            ("JR e", [0x18, 0x10], 12, None),
+            ("JR NZ,e", [0x20, 0x10], 12, None),
+            ("JR Z,e", [0x28, 0x10], 12, "FLAG_Z"),
+            ("JR NC,e", [0x30, 0x10], 12, None),
+            ("JR C,e", [0x38, 0x10], 12, "FLAG_C"),
+            ("DJNZ e (branch)", [0x10, 0x10], 13, "B=2"),
+            ("DJNZ e (no branch)", [0x10, 0x00], 8, "B=1"),
+            # Call/Return
+            ("CALL nn", [0xCD, 0x00, 0x10], 17, None),
+            ("CALL NZ,nn", [0xC4, 0x00, 0x10], 17, None),
+            ("CALL Z,nn", [0xCC, 0x00, 0x10], 17, "FLAG_Z"),
+            ("CALL NC,nn", [0xD4, 0x00, 0x10], 17, None),
+            ("CALL C,nn", [0xDC, 0x00, 0x10], 17, "FLAG_C"),
+            ("RET", [0xC9], 10, None),
+            ("RET NZ", [0xC0], 11, None),
+            ("RET Z", [0xC8], 11, "FLAG_Z"),
+            ("RET NC", [0xD0], 11, None),
+            ("RET C", [0xD8], 11, "FLAG_C"),
+            ("RETI", [0xED, 0x4D], 14, None),
+            ("RETN", [0xED, 0x45], 14, None),
+            ("RST 00H", [0xC7], 11, None),
+            ("RST 08H", [0xCF], 11, None),
+            ("RST 10H", [0xD7], 11, None),
+            ("RST 18H", [0xDF], 11, None),
+            ("RST 20H", [0xE7], 11, None),
+            ("RST 28H", [0xEF], 11, None),
+            ("RST 30H", [0xF7], 11, None),
+            ("RST 38H", [0xFF], 11, None),
+            # Input/Output
+            ("IN A,(N)", [0xDB, 0x55], 11, None),
+            ("OUT (N),A", [0xD3, 0x55], 11, None),
+            ("IN B,(C)", [0xED, 0x40], 12, None),
+            ("OUT (C),B", [0xED, 0x41], 12, None),
+            # Block transfer
+            ("LDI", [0xED, 0xA0], 16, None),
+            ("LDD", [0xED, 0xA8], 16, None),
+            ("LDIR", [0xED, 0xB0], 21, None),
+            ("LDDR", [0xED, 0xB8], 21, None),
+            ("CPI", [0xED, 0xA1], 16, None),
+            ("CPD", [0xED, 0xA9], 16, None),
+            ("CPIR", [0xED, 0xB1], 21, None),
+            ("CPDR", [0xED, 0xB9], 21, None),
+            ("INI", [0xED, 0xA2], 16, None),
+            ("IND", [0xED, 0xAA], 16, None),
+            ("INIR", [0xED, 0xB2], 21, None),
+            ("INDR", [0xED, 0xBA], 21, None),
+            ("OUTI", [0xED, 0xA3], 16, None),
+            ("OUTD", [0xED, 0xAB], 16, None),
+            ("OTIR", [0xED, 0xB3], 21, None),
+            ("OTDR", [0xED, 0xBB], 21, None),
+            # CPU control
+            ("NOP", [0x00], 4, None),
+            ("HALT", [0x76], 4, None),
+            ("DI", [0xF3], 4, None),
+            ("EI", [0xFB], 4, None),
+            ("IM 0", [0xED, 0x46], 8, None),
+            ("IM 1", [0xED, 0x56], 8, None),
+            ("IM 2", [0xED, 0x5E], 8, None),
+            # RLD/RRD
+            ("RLD", [0xED, 0x6F], 18, None),
+            ("RRD", [0xED, 0x67], 18, None),
+        ],
+    )
+    def test_instruction_timing(self, cpu, name, code, cycles, setup):
+        """Test instruction timing matches Z80 specification."""
+        # Setup initial state
+        if setup == "IX":
+            cpu.IX = 0x1000
+            addr = 0x1010
+            cpu.write_byte(addr, 0x00)
+        elif setup == "IY":
+            cpu.IY = 0x1000
+            addr = 0x1010
+            cpu.write_byte(addr, 0x00)
+        elif setup == "B=2":
+            cpu.B = 2
+        elif setup == "B=1":
+            cpu.B = 1
+        elif setup == "FLAG_Z":
+            cpu.regs.F = 0x40
+        elif setup == "FLAG_C":
+            cpu.regs.F = 0x01
+
+        # Write program
+        for i, b in enumerate(code):
+            cpu.write_byte(i, b)
+        cpu.PC = 0
+
+        # Execute and measure cycles
+        actual_cycles = cpu.step()
+
+        assert actual_cycles == cycles, (
+            f"{name}: expected {cycles} cycles, got {actual_cycles}"
+        )

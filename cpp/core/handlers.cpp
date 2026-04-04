@@ -27,48 +27,44 @@ using namespace z80flags;
 #define OPCODE cpu.current_opcode
 #define CYCLES cpu.cycles
 #define MEM cpu._mem
-#define MEM_RD(a) cpu._bus_read(a, CYCLES)
-#define MEM_WR(a,v) cpu._bus_write(a, v, CYCLES)
-#define MEM_WR_D(a,v) cpu._bus_write_direct(a, v, CYCLES)
-#define IO_RD(p) cpu._bus_io_read(p, CYCLES)
-#define IO_WR(p,v) cpu._bus_io_write(p, v, CYCLES)
-#define READ_PC(off) (cpu._is_simple_bus ? MEM[(cpu.regs.PC + (off)) & 0xFFFF] : cpu._bus_read((cpu.regs.PC + (off)) & 0xFFFF, CYCLES))
+#define MEM_RD(a) cpu._bus_read(a)
+#define MEM_WR(a,v) cpu._bus_write(a, v)
+#define IO_RD(p) cpu._bus_io_read(p)
+#define IO_WR(p,v) cpu._bus_io_write(p, v)
 
 // ============================================================
 // NOP handlers for unknown opcodes
 // ============================================================
-static int op_nop_base(CPU& cpu) { return 4; }
-static int op_nop_cb(CPU& cpu) { return 8; }
-static int op_nop_ed(CPU& cpu) { return 8; }
-static int op_nop_dd(CPU& cpu) { return 4; }
-static int op_nop_fd(CPU& cpu) { return 4; }
-static int op_nop_ddcb(CPU& cpu) { return 23; }
-static int op_nop_fdcb(CPU& cpu) { return 23; }
+static void op_nop_base(CPU& cpu) { }
+static void op_nop_cb(CPU& cpu) { cpu._wait(4); }
+static void op_nop_ed(CPU& cpu) { cpu._wait(4); }
+static void op_nop_dd(CPU& cpu) { }
+static void op_nop_fd(CPU& cpu) { }
+static void op_nop_ddcb(CPU& cpu) { cpu._wait(19); }
+static void op_nop_fdcb(CPU& cpu) { cpu._wait(19); }
 
 // ============================================================
 // Base instruction handlers
 // ============================================================
-int op_nop(CPU& cpu) { return 4; }
+void op_nop(CPU& cpu) { }
 
-int op_halt(CPU& cpu) {
+void op_halt(CPU& cpu) {
     cpu.halted = true;
+    cpu.regs.PC = (cpu.regs.PC - 1) & 0xFFFF;
     cpu._pc_modified = true;
-    return 4;
 }
 
-int op_di(CPU& cpu) {
+void op_di(CPU& cpu) {
     cpu.regs.IFF1 = cpu.regs.IFF2 = false;
     cpu.regs.EI_PENDING = false;
-    return 4;
 }
 
-int op_ei(CPU& cpu) {
+void op_ei(CPU& cpu) {
     cpu.regs.EI_PENDING = true;
     cpu.regs.EI_JUST_RESOLVED = false;
-    return 4;
 }
 
-int op_ld_r_r(CPU& cpu) {
+void op_ld_r_r(CPU& cpu) {
     uint8_t dest = (OPCODE >> 3) & 7;
     uint8_t src = OPCODE & 7;
     uint8_t val;
@@ -92,12 +88,11 @@ int op_ld_r_r(CPU& cpu) {
         case 6: MEM_WR(REG_HL, val); break;
         default: REG_A = val; break;
     }
-    return (dest == 6 || src == 6) ? 7 : 4;
 }
 
-int op_ld_r_n(CPU& cpu) {
+void op_ld_r_n(CPU& cpu) {
     uint8_t dest = (OPCODE >> 3) & 7;
-    uint8_t val = READ_PC(1);
+    uint8_t val = cpu._bus_read(cpu.regs.PC++);
     switch (dest) {
         case 0: REG_B = val; break;
         case 1: REG_C = val; break;
@@ -105,13 +100,12 @@ int op_ld_r_n(CPU& cpu) {
         case 3: REG_E = val; break;
         case 4: REG_H = val; break;
         case 5: REG_L = val; break;
-        case 6: MEM_WR(REG_HL, val); return 10;
+        case 6: MEM_WR(REG_HL, val); return;
         default: REG_A = val; break;
     }
-    return 7;
 }
 
-int op_ld_r_hl(CPU& cpu) {
+void op_ld_r_hl(CPU& cpu) {
     uint8_t dest = (OPCODE >> 3) & 7;
     uint8_t val = MEM_RD(REG_HL);
     switch (dest) {
@@ -123,10 +117,9 @@ int op_ld_r_hl(CPU& cpu) {
         case 5: REG_L = val; break;
         default: REG_A = val; break;
     }
-    return 7;
 }
 
-int op_ld_hl_r(CPU& cpu) {
+void op_ld_hl_r(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     uint8_t val;
     switch (src) {
@@ -138,153 +131,148 @@ int op_ld_hl_r(CPU& cpu) {
         default: val = REG_L; break;
     }
     MEM_WR(REG_HL, val);
-    return 7;
 }
 
-int op_ld_hl_n(CPU& cpu) {
-    uint8_t val = READ_PC(1);
+void op_ld_hl_n(CPU& cpu) {
+    uint8_t val = cpu._bus_read(cpu.regs.PC++);
     MEM_WR(REG_HL, val);
-    return 10;
 }
 
-int op_ld_a_bc(CPU& cpu) {
+void op_ld_a_bc(CPU& cpu) {
     uint16_t bc = REG_BC;
     REG_A = MEM_RD(bc);
     cpu.regs.MEMPTR = (bc + 1) & 0xFFFF;
-    return 7;
 }
 
-int op_ld_a_de(CPU& cpu) {
+void op_ld_a_de(CPU& cpu) {
     uint16_t de = REG_DE;
     REG_A = MEM_RD(de);
     cpu.regs.MEMPTR = (de + 1) & 0xFFFF;
-    return 7;
 }
 
-int op_ld_a_nn(CPU& cpu) {
-    uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
+void op_ld_a_nn(CPU& cpu) {
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
     REG_A = MEM_RD(addr);
     cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
-    return 13;
 }
 
-int op_ld_bc_a(CPU& cpu) {
+void op_ld_bc_a(CPU& cpu) {
     uint16_t bc = REG_BC;
     uint8_t a = REG_A;
     MEM_WR(bc, a);
     cpu.regs.MEMPTR = ((a << 8) | ((bc + 1) & 0xFF)) & 0xFFFF;
-    return 7;
 }
 
-int op_ld_de_a(CPU& cpu) {
+void op_ld_de_a(CPU& cpu) {
     uint16_t de = REG_DE;
     uint8_t a = REG_A;
     MEM_WR(de, a);
     cpu.regs.MEMPTR = ((a << 8) | ((de + 1) & 0xFF)) & 0xFFFF;
-    return 7;
 }
 
-int op_ld_nn_a(CPU& cpu) {
-    uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
+void op_ld_nn_a(CPU& cpu) {
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
     uint8_t a = REG_A;
     MEM_WR(addr, a);
     cpu.regs.MEMPTR = ((a << 8) | ((addr + 1) & 0xFF)) & 0xFFFF;
-    return 13;
 }
 
-int op_ld_rr_nn(CPU& cpu) {
+void op_ld_rr_nn(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
-    uint16_t val = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t val = lo | (hi << 8);
     cpu.regs.set_reg16(pair, val);
-    return 10;
 }
 
-int op_ld_hl_nn(CPU& cpu) {
-    uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
+void op_ld_hl_nn(CPU& cpu) {
+    uint8_t pclo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t pchi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = pclo | (pchi << 8);
     uint8_t lo = MEM_RD(addr);
     uint8_t hi = MEM_RD((addr + 1) & 0xFFFF);
     SET_HL((uint16_t)(lo | (hi << 8)));
-    return 16;
 }
 
-int op_ld_nn_hl(CPU& cpu) {
-    uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
+void op_ld_nn_hl(CPU& cpu) {
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
     MEM_WR(addr, REG_L);
     MEM_WR((addr + 1) & 0xFFFF, REG_H);
-    return 16;
 }
 
-int op_ld_sp_hl(CPU& cpu) {
+void op_ld_sp_hl(CPU& cpu) {
     cpu.regs.SP = REG_HL;
-    return 6;
+    cpu._wait(2); // SP=HL takes 6T (4+2)
 }
 
-int op_push_rr(CPU& cpu) {
+void op_push_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
     uint16_t val = cpu.regs.get_reg16_push(pair);
-    cpu.regs.SP = (cpu.regs.SP - 2) & 0xFFFF;
-    MEM_WR_D(cpu.regs.SP, val & 0xFF);
-    MEM_WR_D((cpu.regs.SP + 1) & 0xFFFF, val >> 8);
-    return 11;
+    cpu._wait(1); // Internal execution (1T)
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, val >> 8);
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, val & 0xFF);
 }
 
-int op_pop_rr(CPU& cpu) {
+void op_pop_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
     uint16_t sp = cpu.regs.SP;
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     cpu.regs.SP = (sp + 2) & 0xFFFF;
     cpu.regs.set_reg16_push(pair, (uint16_t)(lo | (hi << 8)));
-    return 10;
 }
 
-int op_ex_de_hl(CPU& cpu) {
+void op_ex_de_hl(CPU& cpu) {
     uint16_t t = REG_DE;
     SET_DE(REG_HL);
     SET_HL(t);
-    return 4;
 }
 
-int op_ex_af_afp(CPU& cpu) {
+void op_ex_af_afp(CPU& cpu) {
     cpu.regs.swap_shadow();
-    return 4;
 }
 
-int op_exx(CPU& cpu) {
+void op_exx(CPU& cpu) {
     cpu.regs.swap_shadow_all();
-    return 4;
 }
 
-int op_ex_sp_hl(CPU& cpu) {
+void op_ex_sp_hl(CPU& cpu) {
     uint16_t sp = cpu.regs.SP;
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     uint16_t temp = (uint16_t)(lo | (hi << 8));
-    MEM_WR_D(sp, REG_L);
-    MEM_WR_D((sp + 1) & 0xFFFF, REG_H);
+    cpu._wait(1); // Internal execution before write (1T)
+    MEM_WR((sp + 1) & 0xFFFF, REG_H);
+    MEM_WR(sp, REG_L);
+    cpu._wait(2); // Internal execution after write (2T)
     SET_HL(temp);
-    return 19;
 }
 
 // --- 8-bit ALU ---
-static inline int _alu_add(CPU& cpu, uint8_t b) {
+static inline void _alu_add(CPU& cpu, uint8_t b) {
     uint8_t a = REG_A;
     REG_A = (a + b) & 0xFF;
     REG_F = ADD_FLAGS[(a << 8) | b];
-    return 4;
 }
 
-static inline int _alu_add_hl(CPU& cpu) {
+static inline void _alu_add_hl(CPU& cpu) {
     uint8_t a = REG_A;
     uint8_t b = MEM_RD(REG_HL);
     REG_A = (a + b) & 0xFF;
     REG_F = ADD_FLAGS[(a << 8) | b];
-    return 7;
 }
 
-int op_add_a(CPU& cpu) {
+void op_add_a(CPU& cpu) {
     uint8_t src = OPCODE & 7;
-    if (src == 6) return _alu_add_hl(cpu);
+    if (src == 6) { _alu_add_hl(cpu); return; }
     uint8_t b;
     switch (src) {
         case 0: b = REG_B; break;
@@ -295,34 +283,27 @@ int op_add_a(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_add(cpu, b);
+    _alu_add(cpu, b);
 }
 
-int op_add_a_n(CPU& cpu) {
-    uint8_t b = READ_PC(1);
-    uint8_t a = REG_A;
-    REG_A = (a + b) & 0xFF;
-    REG_F = ADD_FLAGS[(a << 8) | b];
-    return 7;
+void op_add_a_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_add(cpu, b);
 }
 
-static inline int _alu_adc(CPU& cpu, uint8_t b) {
+static inline void _alu_adc(CPU& cpu, uint8_t b) {
     uint8_t a = REG_A;
     uint8_t c = REG_F & FLAG_C;
     REG_A = (a + b + c) & 0xFF;
     REG_F = (c ? ADC_FLAGS : ADD_FLAGS)[(a << 8) | b];
-    return 4;
 }
 
-int op_adc_a(CPU& cpu) {
+void op_adc_a(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        uint8_t a = REG_A;
-        uint8_t c = REG_F & FLAG_C;
-        REG_A = (a + b + c) & 0xFF;
-        REG_F = (c ? ADC_FLAGS : ADD_FLAGS)[(a << 8) | b];
-        return 7;
+        _alu_adc(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -334,33 +315,26 @@ int op_adc_a(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_adc(cpu, b);
+    _alu_adc(cpu, b);
 }
 
-int op_adc_a_n(CPU& cpu) {
-    uint8_t b = READ_PC(1);
-    uint8_t a = REG_A;
-    uint8_t c = REG_F & FLAG_C;
-    REG_A = (a + b + c) & 0xFF;
-    REG_F = (c ? ADC_FLAGS : ADD_FLAGS)[(a << 8) | b];
-    return 7;
+void op_adc_a_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_adc(cpu, b);
 }
 
-static inline int _alu_sub(CPU& cpu, uint8_t b) {
+static inline void _alu_sub(CPU& cpu, uint8_t b) {
     uint8_t a = REG_A;
     REG_A = (a - b) & 0xFF;
     REG_F = SUB_FLAGS[(a << 8) | b];
-    return 4;
 }
 
-int op_sub(CPU& cpu) {
+void op_sub(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        uint8_t a = REG_A;
-        REG_A = (a - b) & 0xFF;
-        REG_F = SUB_FLAGS[(a << 8) | b];
-        return 7;
+        _alu_sub(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -372,34 +346,27 @@ int op_sub(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_sub(cpu, b);
+    _alu_sub(cpu, b);
 }
 
-int op_sub_n(CPU& cpu) {
-    uint8_t b = READ_PC(1);
-    uint8_t a = REG_A;
-    REG_A = (a - b) & 0xFF;
-    REG_F = SUB_FLAGS[(a << 8) | b];
-    return 7;
+void op_sub_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_sub(cpu, b);
 }
 
-static inline int _alu_sbc(CPU& cpu, uint8_t b) {
+static inline void _alu_sbc(CPU& cpu, uint8_t b) {
     uint8_t a = REG_A;
     uint8_t c = REG_F & FLAG_C;
     REG_A = (a - b - c) & 0xFF;
     REG_F = (c ? SBC_FLAGS : SUB_FLAGS)[(a << 8) | b];
-    return 4;
 }
 
-int op_sbc_a(CPU& cpu) {
+void op_sbc_a(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        uint8_t a = REG_A;
-        uint8_t c = REG_F & FLAG_C;
-        REG_A = (a - b - c) & 0xFF;
-        REG_F = (c ? SBC_FLAGS : SUB_FLAGS)[(a << 8) | b];
-        return 7;
+        _alu_sbc(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -411,31 +378,25 @@ int op_sbc_a(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_sbc(cpu, b);
+    _alu_sbc(cpu, b);
 }
 
-int op_sbc_a_n(CPU& cpu) {
-    uint8_t b = READ_PC(1);
-    uint8_t a = REG_A;
-    uint8_t c = REG_F & FLAG_C;
-    REG_A = (a - b - c) & 0xFF;
-    REG_F = (c ? SBC_FLAGS : SUB_FLAGS)[(a << 8) | b];
-    return 7;
+void op_sbc_a_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_sbc(cpu, b);
 }
 
-static inline int _alu_and(CPU& cpu, uint8_t b) {
+static inline void _alu_and(CPU& cpu, uint8_t b) {
     REG_A &= b;
     REG_F = SZHZP_TABLE[REG_A];
-    return 4;
 }
 
-int op_and(CPU& cpu) {
+void op_and(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        REG_A &= b;
-        REG_F = SZHZP_TABLE[REG_A];
-        return 7;
+        _alu_and(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -447,28 +408,25 @@ int op_and(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_and(cpu, b);
+    _alu_and(cpu, b);
 }
 
-int op_and_n(CPU& cpu) {
-    REG_A &= READ_PC(1);
-    REG_F = SZHZP_TABLE[REG_A];
-    return 7;
+void op_and_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_and(cpu, b);
 }
 
-static inline int _alu_or(CPU& cpu, uint8_t b) {
+static inline void _alu_or(CPU& cpu, uint8_t b) {
     REG_A |= b;
     REG_F = SZ53P_TABLE[REG_A];
-    return 4;
 }
 
-int op_or(CPU& cpu) {
+void op_or(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        REG_A |= b;
-        REG_F = SZ53P_TABLE[REG_A];
-        return 7;
+        _alu_or(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -480,28 +438,25 @@ int op_or(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_or(cpu, b);
+    _alu_or(cpu, b);
 }
 
-int op_or_n(CPU& cpu) {
-    REG_A |= READ_PC(1);
-    REG_F = SZ53P_TABLE[REG_A];
-    return 7;
+void op_or_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_or(cpu, b);
 }
 
-static inline int _alu_xor(CPU& cpu, uint8_t b) {
+static inline void _alu_xor(CPU& cpu, uint8_t b) {
     REG_A ^= b;
     REG_F = SZ53P_TABLE[REG_A];
-    return 4;
 }
 
-int op_xor(CPU& cpu) {
+void op_xor(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        REG_A ^= b;
-        REG_F = SZ53P_TABLE[REG_A];
-        return 7;
+        _alu_xor(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -513,28 +468,25 @@ int op_xor(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_xor(cpu, b);
+    _alu_xor(cpu, b);
 }
 
-int op_xor_n(CPU& cpu) {
-    REG_A ^= READ_PC(1);
-    REG_F = SZ53P_TABLE[REG_A];
-    return 7;
+void op_xor_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_xor(cpu, b);
 }
 
-static inline int _alu_cp(CPU& cpu, uint8_t b) {
+static inline void _alu_cp(CPU& cpu, uint8_t b) {
     uint8_t a = REG_A;
     REG_F = (SUB_FLAGS[(a << 8) | b] & ~(FLAG_F3 | FLAG_F5)) | (b & (FLAG_F3 | FLAG_F5));
-    return 4;
 }
 
-int op_cp(CPU& cpu) {
+void op_cp(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
         uint8_t b = MEM_RD(REG_HL);
-        uint8_t a = REG_A;
-        REG_F = (SUB_FLAGS[(a << 8) | b] & ~(FLAG_F3 | FLAG_F5)) | (b & (FLAG_F3 | FLAG_F5));
-        return 7;
+        _alu_cp(cpu, b);
+        return;
     }
     uint8_t b;
     switch (src) {
@@ -546,25 +498,24 @@ int op_cp(CPU& cpu) {
         case 5: b = REG_L; break;
         default: b = REG_A; break;
     }
-    return _alu_cp(cpu, b);
+    _alu_cp(cpu, b);
 }
 
-int op_cp_n(CPU& cpu) {
-    uint8_t b = READ_PC(1);
-    uint8_t a = REG_A;
-    REG_F = (SUB_FLAGS[(a << 8) | b] & ~(FLAG_F3 | FLAG_F5)) | (b & (FLAG_F3 | FLAG_F5));
-    return 7;
+void op_cp_n(CPU& cpu) {
+    uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    _alu_cp(cpu, b);
 }
 
 // INC/DEC
-int op_inc_r(CPU& cpu) {
+void op_inc_r(CPU& cpu) {
     int dest = (OPCODE >> 3) & 7;
     if (dest == 6) {
         uint8_t val = MEM_RD(REG_HL);
         uint8_t nv = (val + 1) & 0xFF;
+        cpu._wait(1); // Internal execution before write (1T)
         MEM_WR(REG_HL, nv);
         REG_F = (REG_F & FLAG_C) | INC_FLAGS[val];
-        return 11;
+        return;
     }
     uint8_t val;
     switch (dest) {
@@ -587,17 +538,17 @@ int op_inc_r(CPU& cpu) {
         default: REG_A = nv; break;
     }
     REG_F = (REG_F & FLAG_C) | INC_FLAGS[val];
-    return 4;
 }
 
-int op_dec_r(CPU& cpu) {
+void op_dec_r(CPU& cpu) {
     int dest = (OPCODE >> 3) & 7;
     if (dest == 6) {
         uint8_t val = MEM_RD(REG_HL);
         uint8_t nv = (val - 1) & 0xFF;
+        cpu._wait(1); // Internal execution before write (1T)
         MEM_WR(REG_HL, nv);
         REG_F = (REG_F & FLAG_C) | DEC_FLAGS[val];
-        return 11;
+        return;
     }
     uint8_t val;
     switch (dest) {
@@ -620,91 +571,81 @@ int op_dec_r(CPU& cpu) {
         default: REG_A = nv; break;
     }
     REG_F = (REG_F & FLAG_C) | DEC_FLAGS[val];
-    return 4;
 }
 
 // 16-bit ALU
-int op_add_hl_rr(CPU& cpu) {
+void op_add_hl_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
     uint16_t hl = REG_HL;
     uint16_t op = cpu.regs.get_reg16(pair);
+    cpu._wait(7); // ADD HL,RR takes 11T (4+7)
     SET_HL((hl + op) & 0xFFFF);
     REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV)) | add16_flags(hl, op, REG_F);
-    return 11;
 }
 
-int op_inc_rr(CPU& cpu) {
+void op_inc_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
+    cpu._wait(2); // INC RR takes 6T (4+2)
     cpu.regs.set_reg16(pair, (cpu.regs.get_reg16(pair) + 1) & 0xFFFF);
-    return 6;
 }
 
-int op_dec_rr(CPU& cpu) {
+void op_dec_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
+    cpu._wait(2); // DEC RR takes 6T (4+2)
     cpu.regs.set_reg16(pair, (cpu.regs.get_reg16(pair) - 1) & 0xFFFF);
-    return 6;
 }
 
 // Rotates
-int op_rlca(CPU& cpu) {
+void op_rlca(CPU& cpu) {
     uint8_t a = REG_A;
     uint8_t c = (a >> 7) & 1;
     REG_A = ((a << 1) | c) & 0xFF;
     REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV)) | c | (REG_A & (FLAG_F3 | FLAG_F5));
-    return 4;
 }
 
-int op_rrca(CPU& cpu) {
+void op_rrca(CPU& cpu) {
     uint8_t a = REG_A;
     uint8_t c = a & 1;
     REG_A = ((a >> 1) | (c << 7)) & 0xFF;
     REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV)) | c | (REG_A & (FLAG_F3 | FLAG_F5));
-    return 4;
 }
 
-int op_rla(CPU& cpu) {
+void op_rla(CPU& cpu) {
     uint8_t a = REG_A;
     uint8_t oc = REG_F & FLAG_C;
     uint8_t nc = (a >> 7) & 1;
     REG_A = ((a << 1) | oc) & 0xFF;
     REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV)) | nc | (REG_A & (FLAG_F3 | FLAG_F5));
-    return 4;
 }
 
-int op_rra(CPU& cpu) {
+void op_rra(CPU& cpu) {
     uint8_t a = REG_A;
     uint8_t oc = REG_F & FLAG_C;
     uint8_t nc = a & 1;
     REG_A = ((a >> 1) | (oc << 7)) & 0xFF;
     REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV)) | nc | (REG_A & (FLAG_F3 | FLAG_F5));
-    return 4;
 }
 
 // DAA
-int op_daa(CPU& cpu) {
-    int idx = ((REG_F & FLAG_N) << 9) | ((REG_F & FLAG_H) << 8) | ((REG_F & FLAG_C) << 7) | REG_A;
-    idx >>= 1; // (N<<10)|(H<<9)|(C<<8)|A, but N is bit 1, H is bit 4, C is bit 0
-    // Correct: index = (N_bit << 10) | (H_bit << 9) | (C_bit << 8) | A
+void op_daa(CPU& cpu) {
     int n = (REG_F >> 1) & 1;
     int h = (REG_F >> 4) & 1;
     int c = REG_F & 1;
-    idx = (n << 10) | (h << 9) | (c << 8) | REG_A;
+    int idx = (n << 10) | (h << 9) | (c << 8) | REG_A;
     REG_A = DAA_FULL_FLAGS[idx * 2];
     REG_F = DAA_FULL_FLAGS[idx * 2 + 1];
     cpu.regs.Q = REG_F;
-    return 4;
 }
 
 // CPL
-int op_cpl(CPU& cpu) {
+void op_cpl(CPU& cpu) {
     REG_A = (~REG_A) & 0xFF;
     REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV | FLAG_C)) | FLAG_H | FLAG_N | (REG_A & (FLAG_F3 | FLAG_F5));
     cpu.regs.Q = REG_F;
-    return 4;
 }
 
 // CCF
-int op_ccf(CPU& cpu) {
+void op_ccf(CPU& cpu) {
     uint8_t old_f = REG_F;
     uint8_t old_c = old_f & FLAG_C;
     uint8_t f = old_f & (FLAG_S | FLAG_Z | FLAG_PV);
@@ -714,104 +655,116 @@ int op_ccf(CPU& cpu) {
     else f |= FLAG_C;
     REG_F = f;
     cpu.regs.Q = f;
-    return 4;
 }
 
 // SCF
-int op_scf(CPU& cpu) {
+void op_scf(CPU& cpu) {
     uint8_t old_f = REG_F;
     uint8_t f = (old_f & (FLAG_S | FLAG_Z | FLAG_PV)) | FLAG_C;
     uint8_t result = (cpu.regs.LAST_Q ^ old_f) | REG_A;
     f |= result & (FLAG_F3 | FLAG_F5);
     REG_F = f;
     cpu.regs.Q = f;
-    return 4;
 }
 
 // Jumps
-int op_jp_nn(CPU& cpu) {
-    uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
-    cpu.regs.PC = addr;
+void op_jp_nn(CPU& cpu) {
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    cpu.regs.PC = lo | (hi << 8);
     cpu._pc_modified = true;
-    return 10;
 }
 
-int op_jp_cc_nn(CPU& cpu) {
+void op_jp_cc_nn(CPU& cpu) {
     int cc = (OPCODE >> 3) & 7;
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
     if (cpu.check_condition(cc)) {
-        uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
-        cpu.regs.PC = addr;
+        cpu.regs.PC = lo | (hi << 8);
         cpu._pc_modified = true;
     }
-    return 10;
 }
 
-int op_jp_hl(CPU& cpu) {
+void op_jp_hl(CPU& cpu) {
     cpu.regs.PC = REG_HL;
     cpu._pc_modified = true;
-    return 4;
 }
 
-int op_jr_e(CPU& cpu) {
-    int8_t offset = (int8_t)READ_PC(1);
-    cpu.regs.PC = (cpu.regs.PC + 2 + offset) & 0xFFFF;
+void op_jr_e(CPU& cpu) {
+    int8_t offset = (int8_t)cpu._bus_read(cpu.regs.PC++);
+    cpu._wait(5); // JR e takes 12T (4+3+5)
+    cpu.regs.PC = (cpu.regs.PC + offset) & 0xFFFF;
     cpu._pc_modified = true;
-    return 12;
 }
 
-int op_jr_cc_e(CPU& cpu) {
+void op_jr_cc_e(CPU& cpu) {
     int cc = (OPCODE >> 3) & 3;  // JR cc: 4->0(NZ), 5->1(Z), 6->2(NC), 7->3(C)
+    int8_t offset = (int8_t)cpu._bus_read(cpu.regs.PC++);
     if (cpu.check_condition(cc)) {
-        int8_t offset = (int8_t)READ_PC(1);
-        cpu.regs.PC = (cpu.regs.PC + 2 + offset) & 0xFFFF;
+        cpu._wait(5); // JR cc,e takes 12T (4+3+5)
+        cpu.regs.PC = (cpu.regs.PC + offset) & 0xFFFF;
         cpu._pc_modified = true;
-        return 12;
     }
-    return 7;
 }
 
-int op_djnz_e(CPU& cpu) {
+void op_djnz_e(CPU& cpu) {
+    // DJNZ: 13T when branch taken, 8T when not taken
+    int8_t offset = (int8_t)cpu._bus_read(cpu.regs.PC++);
+    cpu._wait(1);  // Internal operation to decrement B
     REG_B = (REG_B - 1) & 0xFF;
     if (REG_B != 0) {
-        int8_t offset = (int8_t)READ_PC(1);
-        cpu.regs.PC = (cpu.regs.PC + 2 + offset) & 0xFFFF;
+        cpu._wait(5);  // branch: 5T total for PC update
+        cpu.regs.PC = (cpu.regs.PC + offset) & 0xFFFF;
         cpu._pc_modified = true;
-        return 13;
     }
-    return 8;
 }
 
 // Calls
-int op_call_nn(CPU& cpu) {
-    uint16_t addr = READ_PC(1) | ((uint16_t)READ_PC(2) << 8);
-    uint16_t ret = (cpu.regs.PC + 3) & 0xFFFF;
-    cpu.regs.SP = (cpu.regs.SP - 2) & 0xFFFF;
-    MEM_WR_D(cpu.regs.SP, ret & 0xFF);
-    MEM_WR_D((cpu.regs.SP + 1) & 0xFFFF, ret >> 8);
+void op_call_nn(CPU& cpu) {
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
+    uint16_t ret = cpu.regs.PC;
+    cpu._wait(1); // Internal execution (1T)
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, ret >> 8);
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, ret & 0xFF);
     cpu.regs.PC = addr;
     cpu._pc_modified = true;
-    return 17;
 }
 
-int op_call_cc_nn(CPU& cpu) {
+void op_call_cc_nn(CPU& cpu) {
     int cc = (OPCODE >> 3) & 7;
-    if (cpu.check_condition(cc)) return op_call_nn(cpu);
-    return 10;
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
+    if (cpu.check_condition(cc)) {
+        uint16_t ret = cpu.regs.PC;
+        cpu._wait(1);
+        cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+        MEM_WR(cpu.regs.SP, ret >> 8);
+        cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+        MEM_WR(cpu.regs.SP, ret & 0xFF);
+        cpu.regs.PC = addr;
+        cpu._pc_modified = true;
+    }
 }
 
 // Returns
-int op_ret(CPU& cpu) {
+void op_ret(CPU& cpu) {
     uint16_t sp = cpu.regs.SP;
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     cpu.regs.SP = (sp + 2) & 0xFFFF;
     cpu.regs.PC = (uint16_t)(lo | (hi << 8));
     cpu._pc_modified = true;
-    return 10;
 }
 
-int op_ret_cc(CPU& cpu) {
+void op_ret_cc(CPU& cpu) {
     int cc = (OPCODE >> 3) & 7;
+    cpu._wait(1); // RET cc takes 5T if not taken, 11T if taken.
+    // Base M1 is 4. + 1 = 5.
     if (cpu.check_condition(cc)) {
         uint16_t sp = cpu.regs.SP;
         uint8_t lo = MEM_RD(sp);
@@ -819,43 +772,40 @@ int op_ret_cc(CPU& cpu) {
         cpu.regs.SP = (sp + 2) & 0xFFFF;
         cpu.regs.PC = (uint16_t)(lo | (hi << 8));
         cpu._pc_modified = true;
-        return 11;
     }
-    return 5;
 }
 
 // RST
-int op_rst(CPU& cpu) {
+void op_rst(CPU& cpu) {
     int p = (OPCODE >> 3) & 7;
     uint16_t addr = (uint16_t)(p * 8);
-    uint16_t ret = (cpu.regs.PC + 1) & 0xFFFF;
-    cpu.regs.SP = (cpu.regs.SP - 2) & 0xFFFF;
-    MEM_WR_D(cpu.regs.SP, ret & 0xFF);
-    MEM_WR_D((cpu.regs.SP + 1) & 0xFFFF, ret >> 8);
+    uint16_t ret = cpu.regs.PC;
+    cpu._wait(1);
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, ret >> 8);
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, ret & 0xFF);
     cpu.regs.PC = addr;
     cpu._pc_modified = true;
-    return 11;
 }
 
 // I/O
-int op_in_a_n(CPU& cpu) {
-    uint8_t port = READ_PC(1);
+void op_in_a_n(CPU& cpu) {
+    uint8_t port = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = (uint16_t)((REG_A << 8) | port);
     REG_A = IO_RD(addr);
-    return 11;
 }
 
-int op_out_n_a(CPU& cpu) {
-    uint8_t port = READ_PC(1);
+void op_out_n_a(CPU& cpu) {
+    uint8_t port = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = (uint16_t)((REG_A << 8) | port);
     IO_WR(addr, REG_A);
-    return 11;
 }
 
 // ============================================================
 // CB handlers (rotates, shifts, bit ops)
 // ============================================================
-static inline int _cb_rot_r(CPU& cpu, uint8_t dest, uint8_t op_idx) {
+static inline void _cb_rot_r(CPU& cpu, uint8_t dest, uint8_t op_idx) {
     uint8_t val;
     switch (dest) {
         case 0: val = REG_B; break;
@@ -892,12 +842,13 @@ static inline int _cb_rot_r(CPU& cpu, uint8_t dest, uint8_t op_idx) {
     if (result == 0) REG_F |= FLAG_Z;
     if (PARITY_TABLE[result]) REG_F |= FLAG_PV;
     if (carry) REG_F |= FLAG_C;
-    return 8;
 }
 
-int op_cb_rot(CPU& cpu) {
-    uint8_t op_idx = (OPCODE >> 3) & 7;
-    uint8_t dest = OPCODE & 7;
+void op_cb_rot(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++); // Fetch actual opcode
+    cpu.current_opcode = opcode;
+    uint8_t op_idx = (opcode >> 3) & 7;
+    uint8_t dest = opcode & 7;
     if (dest == 6) {
         uint8_t val = MEM_RD(REG_HL);
         uint8_t old_carry = REG_F & FLAG_C;
@@ -913,28 +864,32 @@ int op_cb_rot(CPU& cpu) {
             result = ROT_RESULT[op_idx][val];
             carry = ROT_CARRY[op_idx][val];
         }
+        cpu._wait(1); // Internal execution (1T)
         MEM_WR(REG_HL, result);
         REG_F = result & (FLAG_S | FLAG_F3 | FLAG_F5);
         if (result == 0) REG_F |= FLAG_Z;
         if (PARITY_TABLE[result]) REG_F |= FLAG_PV;
         if (carry) REG_F |= FLAG_C;
-        return 15;
+        return;
     }
-    return _cb_rot_r(cpu, dest, op_idx);
+    _cb_rot_r(cpu, dest, op_idx);
 }
 
-int op_cb_bit(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
-    uint8_t src = OPCODE & 7;
+void op_cb_bit(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
+    uint8_t src = opcode & 7;
     if (src == 6) {
         uint8_t val = MEM_RD(REG_HL);
         uint8_t test = val & BIT_MASK[bit];
+        cpu._wait(1); // BIT n,(HL) is 12T (4+4+3+1)
         cpu.regs.MEMPTR = REG_HL;
         REG_F = FLAG_H | (REG_F & FLAG_C);
         if (test == 0) REG_F |= FLAG_Z | FLAG_PV;
         if (bit == 7 && test) REG_F |= FLAG_S;
         REG_F |= (REG_HL >> 8) & (FLAG_F3 | FLAG_F5);
-        return 12;
+        return;
     }
     uint8_t val;
     switch (src) {
@@ -951,23 +906,27 @@ int op_cb_bit(CPU& cpu) {
     if (test == 0) REG_F |= FLAG_Z | FLAG_PV;
     if (bit == 7 && test) REG_F |= FLAG_S;
     REG_F |= val & (FLAG_F3 | FLAG_F5);
-    return 8;
 }
 
-int op_cb_set_hl(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
+void op_cb_set_hl(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
     uint8_t val = MEM_RD(REG_HL);
+    cpu._wait(1);
     MEM_WR(REG_HL, val | BIT_MASK[bit]);
-    return 15;
 }
 
-int op_cb_res(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
-    uint8_t dest = OPCODE & 7;
+void op_cb_res(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
+    uint8_t dest = opcode & 7;
     if (dest == 6) {
         uint8_t val = MEM_RD(REG_HL);
+        cpu._wait(1);
         MEM_WR(REG_HL, val & RES_MASK[bit]);
-        return 15;
+        return;
     }
     uint8_t val;
     switch (dest) {
@@ -989,16 +948,18 @@ int op_cb_res(CPU& cpu) {
         case 5: REG_L = result; break;
         default: REG_A = result; break;
     }
-    return 8;
 }
 
-int op_cb_set(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
-    uint8_t dest = OPCODE & 7;
+void op_cb_set(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
+    uint8_t dest = opcode & 7;
     if (dest == 6) {
         uint8_t val = MEM_RD(REG_HL);
+        cpu._wait(1);
         MEM_WR(REG_HL, val | BIT_MASK[bit]);
-        return 15;
+        return;
     }
     uint8_t val;
     switch (dest) {
@@ -1020,14 +981,15 @@ int op_cb_set(CPU& cpu) {
         case 5: REG_L = result; break;
         default: REG_A = result; break;
     }
-    return 8;
 }
 
-int op_cb_res_hl(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
+void op_cb_res_hl(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
     uint8_t val = MEM_RD(REG_HL);
+    cpu._wait(1);
     MEM_WR(REG_HL, val & RES_MASK[bit]);
-    return 15;
 }
 
 // ============================================================
@@ -1040,38 +1002,60 @@ static inline void _ld_block_flags(CPU& cpu, uint8_t a_val, uint16_t bc_after) {
     if (bc_after != 0) REG_F |= FLAG_PV;
 }
 
-int op_ldi(CPU& cpu) {
+void op_ldi(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++); // Fetch actual opcode
+    uint8_t val = MEM_RD(REG_HL);
+    MEM_WR(REG_DE, val);
+    cpu._wait(2); // 16T total (4+4+3+3+2)
+    SET_HL((REG_HL + 1) & 0xFFFF);
+    SET_DE((REG_DE + 1) & 0xFFFF);
+    SET_BC((REG_BC - 1) & 0xFFFF);
+    _ld_block_flags(cpu, REG_A + val, REG_BC);
+}
+
+void op_ldir(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++); // Fetch actual opcode
     uint8_t val = MEM_RD(REG_HL);
     MEM_WR(REG_DE, val);
     SET_HL((REG_HL + 1) & 0xFFFF);
     SET_DE((REG_DE + 1) & 0xFFFF);
     SET_BC((REG_BC - 1) & 0xFFFF);
     _ld_block_flags(cpu, REG_A + val, REG_BC);
-    return 16;
+    if (REG_BC != 0) {
+        cpu._wait(7); // 21T (4+4+3+3+7)
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    } else {
+        cpu._wait(2); // 16T
+    }
 }
 
-int op_ldir(CPU& cpu) {
-    if (REG_BC == 0) return 16;
-    op_ldi(cpu);
-    if (REG_BC != 0) { cpu._pc_modified = true; return 21; }
-    return 16;
+void op_ldd(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t val = MEM_RD(REG_HL);
+    MEM_WR(REG_DE, val);
+    cpu._wait(2);
+    SET_HL((REG_HL - 1) & 0xFFFF);
+    SET_DE((REG_DE - 1) & 0xFFFF);
+    SET_BC((REG_BC - 1) & 0xFFFF);
+    _ld_block_flags(cpu, REG_A + val, REG_BC);
 }
 
-int op_ldd(CPU& cpu) {
+void op_lddr(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
     MEM_WR(REG_DE, val);
     SET_HL((REG_HL - 1) & 0xFFFF);
     SET_DE((REG_DE - 1) & 0xFFFF);
     SET_BC((REG_BC - 1) & 0xFFFF);
     _ld_block_flags(cpu, REG_A + val, REG_BC);
-    return 16;
-}
-
-int op_lddr(CPU& cpu) {
-    if (REG_BC == 0) return 16;
-    op_ldd(cpu);
-    if (REG_BC != 0) { cpu._pc_modified = true; return 21; }
-    return 16;
+    if (REG_BC != 0) {
+        cpu._wait(7);
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    } else {
+        cpu._wait(2);
+    }
 }
 
 static inline void _cpi_flags(CPU& cpu, uint8_t a, uint8_t val, uint16_t bc_after) {
@@ -1086,42 +1070,56 @@ static inline void _cpi_flags(CPU& cpu, uint8_t a, uint8_t val, uint16_t bc_afte
     if (bc_after != 0) REG_F |= FLAG_PV;
 }
 
-int op_cpi(CPU& cpu) {
+void op_cpi(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
+    cpu._wait(5); // 16T (4+4+3+5)
     SET_HL((REG_HL + 1) & 0xFFFF);
     SET_BC((REG_BC - 1) & 0xFFFF);
     _cpi_flags(cpu, REG_A, val, REG_BC);
-    return 16;
 }
 
-int op_cpir(CPU& cpu) {
+void op_cpir(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
     uint8_t a = REG_A;
     uint8_t result = (a - val) & 0xFF;
     SET_HL((REG_HL + 1) & 0xFFFF);
     SET_BC((REG_BC - 1) & 0xFFFF);
     _cpi_flags(cpu, a, val, REG_BC);
-    if (REG_BC != 0 && result != 0) { cpu._pc_modified = true; return 21; }
-    return 16;
+    if (REG_BC != 0 && result != 0) {
+        cpu._wait(10); // 21T (4+4+3+10)
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    } else {
+        cpu._wait(5); // 16T
+    }
 }
 
-int op_cpd(CPU& cpu) {
+void op_cpd(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
+    cpu._wait(5);
     SET_HL((REG_HL - 1) & 0xFFFF);
     SET_BC((REG_BC - 1) & 0xFFFF);
     _cpi_flags(cpu, REG_A, val, REG_BC);
-    return 16;
 }
 
-int op_cpdr(CPU& cpu) {
+void op_cpdr(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
     uint8_t a = REG_A;
     uint8_t result = (a - val) & 0xFF;
     SET_HL((REG_HL - 1) & 0xFFFF);
     SET_BC((REG_BC - 1) & 0xFFFF);
     _cpi_flags(cpu, a, val, REG_BC);
-    if (REG_BC != 0 && result != 0) { cpu._pc_modified = true; return 21; }
-    return 16;
+    if (REG_BC != 0 && result != 0) {
+        cpu._wait(10);
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    } else {
+        cpu._wait(5);
+    }
 }
 
 static inline void _in_out_flags(CPU& cpu, uint8_t value, uint8_t old_b, uint8_t new_b) {
@@ -1134,145 +1132,185 @@ static inline void _in_out_flags(CPU& cpu, uint8_t value, uint8_t old_b, uint8_t
     REG_F = f;
 }
 
-int op_ini(CPU& cpu) {
+void op_ini(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1); // 16T total
     uint8_t val = IO_RD(REG_BC);
     MEM_WR(REG_HL, val);
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     SET_HL((REG_HL + 1) & 0xFFFF);
     _in_out_flags(cpu, val, old_b, REG_B);
-    return 16;
 }
 
-int op_inir(CPU& cpu) {
-    if (REG_B == 0) return 16;
+void op_inir(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
+    uint8_t val = IO_RD(REG_BC);
+    MEM_WR(REG_HL, val);
     uint8_t old_b = REG_B;
-    op_ini(cpu);
-    if (old_b != 1) { cpu._pc_modified = true; return 21; }
-    return 16;
+    REG_B = (REG_B - 1) & 0xFF;
+    SET_HL((REG_HL + 1) & 0xFFFF);
+    _in_out_flags(cpu, val, old_b, REG_B);
+    if (REG_B != 0) {
+        cpu._wait(5); // 21T
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    }
 }
 
-int op_ind(CPU& cpu) {
+void op_ind(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
     uint8_t val = IO_RD(REG_BC);
     MEM_WR(REG_HL, val);
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     SET_HL((REG_HL - 1) & 0xFFFF);
     _in_out_flags(cpu, val, old_b, REG_B);
-    return 16;
 }
 
-int op_indr(CPU& cpu) {
-    if (REG_B == 0) return 16;
+void op_indr(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
+    uint8_t val = IO_RD(REG_BC);
+    MEM_WR(REG_HL, val);
     uint8_t old_b = REG_B;
-    op_ind(cpu);
-    if (old_b != 1) { cpu._pc_modified = true; return 21; }
-    return 16;
+    REG_B = (REG_B - 1) & 0xFF;
+    SET_HL((REG_HL - 1) & 0xFFFF);
+    _in_out_flags(cpu, val, old_b, REG_B);
+    if (REG_B != 0) {
+        cpu._wait(5);
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    }
 }
 
-int op_outi(CPU& cpu) {
+void op_outi(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
     uint8_t val = MEM_RD(REG_HL);
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     IO_WR(REG_BC, val);
     SET_HL((REG_HL + 1) & 0xFFFF);
     _in_out_flags(cpu, val, old_b, REG_B);
-    return 16;
 }
 
-int op_otir(CPU& cpu) {
-    if (REG_B == 0) return 16;
+void op_otir(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
+    uint8_t val = MEM_RD(REG_HL);
     uint8_t old_b = REG_B;
-    op_outi(cpu);
-    if (old_b != 1) { cpu._pc_modified = true; return 21; }
-    return 16;
+    REG_B = (REG_B - 1) & 0xFF;
+    IO_WR(REG_BC, val);
+    SET_HL((REG_HL + 1) & 0xFFFF);
+    _in_out_flags(cpu, val, old_b, REG_B);
+    if (REG_B != 0) {
+        cpu._wait(5);
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    }
 }
 
-int op_outd(CPU& cpu) {
+void op_outd(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
     uint8_t val = MEM_RD(REG_HL);
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     IO_WR(REG_BC, val);
     SET_HL((REG_HL - 1) & 0xFFFF);
     _in_out_flags(cpu, val, old_b, REG_B);
-    return 16;
 }
 
-int op_otdr(CPU& cpu) {
-    if (REG_B == 0) return 16;
+void op_otdr(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
+    uint8_t val = MEM_RD(REG_HL);
     uint8_t old_b = REG_B;
-    op_outd(cpu);
-    if (old_b != 1) { cpu._pc_modified = true; return 21; }
-    return 16;
+    REG_B = (REG_B - 1) & 0xFF;
+    IO_WR(REG_BC, val);
+    SET_HL((REG_HL - 1) & 0xFFFF);
+    _in_out_flags(cpu, val, old_b, REG_B);
+    if (REG_B != 0) {
+        cpu._wait(5);
+        cpu.regs.PC = (cpu.regs.PC - 2) & 0xFFFF;
+        cpu._pc_modified = true;
+    }
 }
 
 // 16-bit ADC/SBC
-int op_adc_hl_rr(CPU& cpu) {
-    int pair = (OPCODE - 0x4A) >> 1;  // 0x4A->0, 0x5A->1, 0x6A->2, 0x7A->3
+void op_adc_hl_rr(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    int pair = (opcode - 0x4A) >> 4;
     uint16_t hl = REG_HL;
     uint8_t carry = REG_F & FLAG_C;
     uint16_t src = cpu.regs.get_reg16(pair);
+    cpu._wait(7); // 15T total (4+4+7)
     SET_HL((hl + src + carry) & 0xFFFF);
     REG_F = adc16_flags(hl, src, carry);
-    return 15;
 }
 
-int op_sbc_hl_rr(CPU& cpu) {
-    int pair = (OPCODE - 0x42) >> 1;  // 0x42->0, 0x52->1, 0x62->2, 0x72->3
+void op_sbc_hl_rr(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    int pair = (opcode - 0x42) >> 4;
     uint16_t hl = REG_HL;
     uint8_t carry = REG_F & FLAG_C;
     uint16_t src = cpu.regs.get_reg16(pair);
+    cpu._wait(7); // 15T total (4+4+7)
     SET_HL((hl - src - carry) & 0xFFFF);
     REG_F = sbc16_flags(hl, src, carry);
-    return 15;
 }
 
 // ED LD (nn),rr / LD rr,(nn)
-int op_ld_rr_nn_ind(CPU& cpu) {
+void op_ld_rr_nn_ind(CPU& cpu) {
+    uint8_t op2 = cpu._bus_fetch(cpu.regs.PC++);
     int pair;
-    uint8_t op2 = READ_PC(1);
     if (op2 == 0x4B) pair = 0;
     else if (op2 == 0x5B) pair = 1;
     else if (op2 == 0x6B) pair = 2;
     else pair = 3;
-    uint16_t addr = READ_PC(2) | ((uint16_t)READ_PC(3) << 8);
+    uint8_t lo_pc = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi_pc = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo_pc | (hi_pc << 8);
     uint8_t lo = MEM_RD(addr);
     uint8_t hi = MEM_RD((addr + 1) & 0xFFFF);
     cpu.regs.set_reg16(pair, (uint16_t)(lo | (hi << 8)));
-    return 20;
 }
 
-int op_ld_nn_rr(CPU& cpu) {
+void op_ld_nn_rr(CPU& cpu) {
+    uint8_t op2 = cpu._bus_fetch(cpu.regs.PC++);
     int pair;
-    uint8_t op2 = READ_PC(1);
     if (op2 == 0x43) pair = 0;
     else if (op2 == 0x53) pair = 1;
     else if (op2 == 0x63) pair = 2;
     else pair = 3;
-    uint16_t addr = READ_PC(2) | ((uint16_t)READ_PC(3) << 8);
+    uint8_t lo_pc = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi_pc = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo_pc | (hi_pc << 8);
     uint16_t val = cpu.regs.get_reg16(pair);
     MEM_WR(addr, val & 0xFF);
     MEM_WR((addr + 1) & 0xFFFF, val >> 8);
-    return 20;
 }
 
-// NEG - compute flags manually since 0-a is special
-int op_neg(CPU& cpu) {
+void op_neg(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t a = REG_A;
     uint8_t result = (-a) & 0xFF;
     REG_A = result;
-    // NEG: N=1, Z=(result==0), C=(a!=0), H=(a&0x0F)!=0, PV=(result==0x80)
     REG_F = FLAG_N;
     if (result == 0) REG_F |= FLAG_Z;
     if (a != 0) REG_F |= FLAG_C;
     if ((a & 0x0F) != 0) REG_F |= FLAG_H;
     if (result == 0x80) REG_F |= FLAG_PV;
     if (result & 0x80) REG_F |= FLAG_S;
-    return 8;
 }
 
-// RETI/RETN
-int op_reti(CPU& cpu) {
+void op_reti(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint16_t sp = cpu.regs.SP;
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
@@ -1280,10 +1318,10 @@ int op_reti(CPU& cpu) {
     cpu.regs.PC = (uint16_t)(lo | (hi << 8));
     cpu._pc_modified = true;
     cpu.regs.IFF1 = cpu.regs.IFF2;
-    return 14;
 }
 
-int op_retn(CPU& cpu) {
+void op_retn(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint16_t sp = cpu.regs.SP;
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
@@ -1291,21 +1329,18 @@ int op_retn(CPU& cpu) {
     cpu.regs.PC = (uint16_t)(lo | (hi << 8));
     cpu._pc_modified = true;
     cpu.regs.IFF1 = cpu.regs.IFF2;
-    return 14;
 }
 
-// IM
-int op_im(CPU& cpu) {
-    uint8_t op2 = READ_PC(1);
+void op_im(CPU& cpu) {
+    uint8_t op2 = cpu._bus_fetch(cpu.regs.PC++);
     if (op2 == 0x46 || op2 == 0x66 || op2 == 0x4E || op2 == 0x6E) cpu.regs.IM = 0;
     else if (op2 == 0x56 || op2 == 0x76) cpu.regs.IM = 1;
     else if (op2 == 0x5E || op2 == 0x7E) cpu.regs.IM = 2;
-    return 8;
 }
 
-// IN r,(C)
-int op_in_r_c(CPU& cpu) {
-    int reg = (OPCODE >> 3) & 7;
+void op_in_r_c(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    int reg = (opcode >> 3) & 7;
     uint8_t val = IO_RD(REG_BC);
     if (reg != 6) {
         switch (reg) {
@@ -1321,12 +1356,11 @@ int op_in_r_c(CPU& cpu) {
     REG_F = (REG_F & FLAG_C) | (val & (FLAG_S | FLAG_F3 | FLAG_F5));
     if (val == 0) REG_F |= FLAG_Z;
     if (PARITY_TABLE[val]) REG_F |= FLAG_PV;
-    return 12;
 }
 
-// OUT (C),r
-int op_out_c_r(CPU& cpu) {
-    int reg = (OPCODE >> 3) & 7;
+void op_out_c_r(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    int reg = (opcode >> 3) & 7;
     uint8_t val;
     switch (reg) {
         case 0: val = REG_B; break;
@@ -1339,41 +1373,42 @@ int op_out_c_r(CPU& cpu) {
         default: val = 0; break;
     }
     IO_WR(REG_BC, val);
-    return 12;
 }
 
-// LD I,A / LD R,A / LD A,I / LD A,R
-int op_ld_i_a(CPU& cpu) { cpu.regs.I = REG_A; return 9; }
-int op_ld_r_a(CPU& cpu) { cpu.regs.R = REG_A; return 9; }
+void op_ld_i_a(CPU& cpu) { cpu._bus_fetch(cpu.regs.PC++); cpu._wait(1); cpu.regs.I = REG_A; }
+void op_ld_r_a(CPU& cpu) { cpu._bus_fetch(cpu.regs.PC++); cpu._wait(1); cpu.regs.R = REG_A; }
 
-int op_ld_a_i(CPU& cpu) {
+void op_ld_a_i(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
     uint8_t a = cpu.regs.I;
     REG_A = a;
     REG_F = (REG_F & FLAG_C) | (a & (FLAG_S | FLAG_F3 | FLAG_F5));
     if (a == 0) REG_F |= FLAG_Z;
     if (cpu.regs.IFF2) REG_F |= FLAG_PV;
     cpu._is_ld_a_ir = true;
-    return 9;
 }
 
-int op_ld_a_r(CPU& cpu) {
+void op_ld_a_r(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
     uint8_t a = cpu.regs.R;
     REG_A = a;
     REG_F = (REG_F & FLAG_C) | (a & (FLAG_S | FLAG_F3 | FLAG_F5));
     if (a == 0) REG_F |= FLAG_Z;
     if (cpu.regs.IFF2) REG_F |= FLAG_PV;
     cpu._is_ld_a_ir = true;
-    return 9;
 }
 
-// RLD/RRD
-int op_rld(CPU& cpu) {
+void op_rld(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
     uint8_t low = val & 0x0F;
     uint8_t high = val & 0xF0;
     uint8_t a_low = REG_A & 0x0F;
     uint8_t new_val = (low << 4) | a_low;
     uint8_t new_a = (REG_A & 0xF0) | (high >> 4);
+    cpu._wait(4); // 18T (4+4+3+4+3)
     MEM_WR(REG_HL, new_val);
     REG_A = new_a;
     REG_F = REG_F & FLAG_C;
@@ -1381,16 +1416,17 @@ int op_rld(CPU& cpu) {
     if (REG_A & 0x80) REG_F |= FLAG_S;
     if (PARITY_TABLE[REG_A]) REG_F |= FLAG_PV;
     REG_F |= REG_A & (FLAG_F3 | FLAG_F5);
-    return 18;
 }
 
-int op_rrd(CPU& cpu) {
+void op_rrd(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = MEM_RD(REG_HL);
     uint8_t low = val & 0x0F;
     uint8_t high = val & 0xF0;
     uint8_t a_low = REG_A & 0x0F;
     uint8_t new_val = (a_low << 4) | (high >> 4);
     uint8_t new_a = (REG_A & 0xF0) | low;
+    cpu._wait(4); // 18T (4+4+3+4+3)
     MEM_WR(REG_HL, new_val);
     REG_A = new_a;
     REG_F = REG_F & FLAG_C;
@@ -1398,14 +1434,13 @@ int op_rrd(CPU& cpu) {
     if (REG_A & 0x80) REG_F |= FLAG_S;
     if (PARITY_TABLE[REG_A]) REG_F |= FLAG_PV;
     REG_F |= REG_A & (FLAG_F3 | FLAG_F5);
-    return 18;
 }
 
 // ============================================================
 // DD/FD indexed handlers
 // ============================================================
 static inline uint16_t _get_ix_addr(CPU& cpu) {
-    uint8_t disp = READ_PC(2);
+    uint8_t disp = cpu._bus_read(cpu.regs.PC++);
     int16_t d = (int8_t)disp;
     uint16_t base = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
     uint16_t addr = (base + d) & 0xFFFF;
@@ -1413,101 +1448,130 @@ static inline uint16_t _get_ix_addr(CPU& cpu) {
     return addr;
 }
 
-int op_dd_fd_ld_ix_nn(CPU& cpu) {
-    uint16_t val = READ_PC(2) | ((uint16_t)READ_PC(3) << 8);
+void op_dd_fd_ld_ix_nn(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t val = lo | (hi << 8);
     if (cpu._is_iy) cpu.regs.IY = val;
     else cpu.regs.IX = val;
-    return 14;
 }
 
-int op_dd_fd_ld_nn_ix(CPU& cpu) {
-    uint16_t addr = READ_PC(2) | ((uint16_t)READ_PC(3) << 8);
+void op_dd_fd_ld_nn_ix(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t lo_pc = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi_pc = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo_pc | (hi_pc << 8);
     uint16_t val = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
     MEM_WR(addr, val & 0xFF);
     MEM_WR((addr + 1) & 0xFFFF, val >> 8);
-    return 20;
 }
 
-int op_dd_fd_ld_ix_nn_ind(CPU& cpu) {
-    uint16_t addr = READ_PC(2) | ((uint16_t)READ_PC(3) << 8);
-    uint8_t lo = MEM_RD(addr);
-    uint8_t hi = MEM_RD((addr + 1) & 0xFFFF);
-    if (cpu._is_iy) cpu.regs.IY = (uint16_t)(lo | (hi << 8));
-    else cpu.regs.IX = (uint16_t)(lo | (hi << 8));
-    return 20;
+void op_dd_fd_ld_ix_nn_ind(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t lo = cpu._bus_read(cpu.regs.PC++);
+    uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
+    uint16_t val = MEM_RD(addr) | ((uint16_t)MEM_RD((addr + 1) & 0xFFFF) << 8);
+    if (cpu._is_iy) cpu.regs.IY = val;
+    else cpu.regs.IX = val;
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
 }
 
-int op_dd_fd_inc_ix(CPU& cpu) {
-    if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY + 1) & 0xFFFF;
-    else cpu.regs.IX = (cpu.regs.IX + 1) & 0xFFFF;
-    return 10;
-}
-
-int op_dd_fd_dec_ix(CPU& cpu) {
-    if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY - 1) & 0xFFFF;
-    else cpu.regs.IX = (cpu.regs.IX - 1) & 0xFFFF;
-    return 10;
-}
-
-int op_dd_fd_ld_sp_ix(CPU& cpu) {
-    cpu.regs.SP = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
-    return 10;
-}
-
-int op_dd_fd_push_ix(CPU& cpu) {
-    uint16_t val = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
-    cpu.regs.SP = (cpu.regs.SP - 2) & 0xFFFF;
-    MEM_WR_D(cpu.regs.SP, val & 0xFF);
-    MEM_WR_D((cpu.regs.SP + 1) & 0xFFFF, val >> 8);
-    return 15;
-}
-
-int op_dd_fd_pop_ix(CPU& cpu) {
-    uint16_t sp = cpu.regs.SP;
-    uint8_t lo = MEM_RD(sp);
-    uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
-    cpu.regs.SP = (sp + 2) & 0xFFFF;
-    if (cpu._is_iy) cpu.regs.IY = (uint16_t)(lo | (hi << 8));
-    else cpu.regs.IX = (uint16_t)(lo | (hi << 8));
-    return 14;
-}
-
-int op_dd_fd_ex_sp_ix(CPU& cpu) {
-    uint16_t sp = cpu.regs.SP;
-    uint8_t lo = MEM_RD(sp);
-    uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
-    uint16_t temp = (uint16_t)(lo | (hi << 8));
-    MEM_WR_D(sp, (cpu._is_iy ? cpu.regs.IY : cpu.regs.IX) & 0xFF);
-    MEM_WR_D((sp + 1) & 0xFFFF, (cpu._is_iy ? cpu.regs.IY : cpu.regs.IX) >> 8);
-    cpu.regs.MEMPTR = temp;
-    if (cpu._is_iy) cpu.regs.IY = temp;
-    else cpu.regs.IX = temp;
-    return 23;
-}
-
-int op_dd_fd_add_ix_rr(CPU& cpu) {
-    int pair = (OPCODE >> 4) & 3;
+void op_dd_fd_inc_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(2);
     uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
-    uint16_t op = (pair == 2) ? ix : cpu.regs.get_reg16(pair);
-    uint16_t result = (ix + op) & 0xFFFF;
-    if (cpu._is_iy) cpu.regs.IY = result;
-    else cpu.regs.IX = result;
-    REG_F = (REG_F & (FLAG_S | FLAG_Z | FLAG_PV)) | add16_flags(ix, op, REG_F);
-    return 15;
+    ix = (ix + 1) & 0xFFFF;
+    if (cpu._is_iy) cpu.regs.IY = ix;
+    else cpu.regs.IX = ix;
 }
 
-int op_dd_fd_jp_ix(CPU& cpu) {
+void op_dd_fd_dec_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(2);
+    uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    ix = (ix - 1) & 0xFFFF;
+    if (cpu._is_iy) cpu.regs.IY = ix;
+    else cpu.regs.IX = ix;
+}
+
+void op_dd_fd_ld_sp_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(2);
+    uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    cpu.regs.SP = ix;
+}
+
+void op_dd_fd_push_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    cpu._wait(1);
+    uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, ix >> 8);
+    cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
+    MEM_WR(cpu.regs.SP, ix & 0xFF);
+}
+
+void op_dd_fd_pop_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    uint16_t ix = MEM_RD(cpu.regs.SP);
+    cpu.regs.SP = (cpu.regs.SP + 1) & 0xFFFF;
+    ix |= (uint16_t)MEM_RD(cpu.regs.SP) << 8;
+    cpu.regs.SP = (cpu.regs.SP + 1) & 0xFFFF;
+    if (cpu._is_iy) cpu.regs.IY = ix;
+    else cpu.regs.IX = ix;
+}
+
+void op_dd_fd_ex_sp_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    uint16_t lo = MEM_RD(cpu.regs.SP);
+    uint16_t hi = MEM_RD((cpu.regs.SP + 1) & 0xFFFF);
+    uint16_t mem_val = lo | (hi << 8);
+    cpu._wait(3);
+    MEM_WR(cpu.regs.SP, ix & 0xFF);
+    MEM_WR((cpu.regs.SP + 1) & 0xFFFF, ix >> 8);
+    if (cpu._is_iy) cpu.regs.IY = mem_val;
+    else cpu.regs.IX = mem_val;
+    cpu.regs.MEMPTR = mem_val;
+}
+
+void op_dd_fd_add_ix_rr(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint16_t rr;
+    switch ((opcode >> 4) & 3) {
+        case 0: rr = cpu.regs.BC(); break;
+        case 1: rr = cpu.regs.DE(); break;
+        case 2: rr = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX; break;
+        default: rr = cpu.regs.SP; break;
+    }
+    uint32_t result = (cpu._is_iy ? cpu.regs.IY : cpu.regs.IX) + rr;
+    if (cpu._is_iy) cpu.regs.IY = result & 0xFFFF;
+    else cpu.regs.IX = result & 0xFFFF;
+    cpu.regs.MEMPTR = (cpu._is_iy ? cpu.regs.IY : cpu.regs.IX) + 1;
+    cpu._wait(7);
+    REG_F = (REG_F & ~(FLAG_C | FLAG_N | FLAG_H)) | ((result >> 16) & FLAG_C) | (((cpu._is_iy ? cpu.regs.IY : cpu.regs.IX) ^ rr ^ result) & FLAG_H);
+}
+
+void op_dd_fd_jp_ix(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint16_t target = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
     cpu.regs.MEMPTR = target;
     cpu.regs.PC = target;
     cpu._pc_modified = true;
-    return 8;
 }
 
-int op_dd_fd_ld_r_ixd(CPU& cpu) {
-    uint8_t dest = (OPCODE >> 3) & 7;
+void op_dd_fd_ld_r_ixd(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t dest = (opcode >> 3) & 7;
     uint16_t addr = _get_ix_addr(cpu);
     uint8_t val = MEM_RD(addr);
+    cpu._wait(5);
     switch (dest) {
         case 0: REG_B = val; break;
         case 1: REG_C = val; break;
@@ -1517,11 +1581,12 @@ int op_dd_fd_ld_r_ixd(CPU& cpu) {
         case 5: REG_L = val; break;
         default: REG_A = val; break;
     }
-    return 19;
 }
 
-int op_dd_fd_ld_ixd_r(CPU& cpu) {
-    uint8_t src = OPCODE & 7;
+void op_dd_fd_ld_ixd_r(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t src = opcode & 7;
     uint16_t addr = _get_ix_addr(cpu);
     uint8_t val;
     switch (src) {
@@ -1533,88 +1598,92 @@ int op_dd_fd_ld_ixd_r(CPU& cpu) {
         case 5: val = REG_L; break;
         default: val = REG_A; break;
     }
+    cpu._wait(5);
     MEM_WR(addr, val);
-    return 19;
 }
 
-int op_dd_fd_ld_ixd_n(CPU& cpu) {
+void op_dd_fd_ld_ixd_n(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);  // Consume opcode byte (4T M1)
     uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = READ_PC(3);
-    MEM_WR(addr, val);
-    return 19;
+    cpu._wait(2);  // Internal delay
+    uint8_t val = cpu._bus_read(cpu.regs.PC++);
+    cpu._bus_write(addr, val);
 }
 
-int op_dd_fd_inc_ixd(CPU& cpu) {
+void op_dd_fd_inc_ixd(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);  // Consume opcode byte (4T M1)
     uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = MEM_RD(addr);
+    uint8_t val = cpu._bus_read(addr);
     uint8_t nv = (val + 1) & 0xFF;
-    MEM_WR(addr, nv);
+    cpu._wait(6);  // Internal for INC operation
+    cpu._bus_write(addr, nv);
     REG_F = (REG_F & FLAG_C) | INC_FLAGS[val];
-    return 23;
 }
 
-int op_dd_fd_dec_ixd(CPU& cpu) {
+void op_dd_fd_dec_ixd(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);  // Consume opcode byte (4T M1)
     uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = MEM_RD(addr);
+    uint8_t val = cpu._bus_read(addr);
     uint8_t nv = (val - 1) & 0xFF;
-    MEM_WR(addr, nv);
+    cpu._wait(6);  // Internal for DEC operation
+    cpu._bus_write(addr, nv);
     REG_F = (REG_F & FLAG_C) | DEC_FLAGS[val];
-    return 23;
 }
 
 // IXH/IYH, IXL/IYL operations
-int op_dd_fd_inc_ixh(CPU& cpu) {
+void op_dd_fd_inc_ixh(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = cpu._is_iy ? (cpu.regs.IY >> 8) & 0xFF : (cpu.regs.IX >> 8) & 0xFF;
     uint8_t nv = (val + 1) & 0xFF;
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0x00FF) | ((uint16_t)nv << 8);
     else cpu.regs.IX = (cpu.regs.IX & 0x00FF) | ((uint16_t)nv << 8);
     REG_F = (REG_F & FLAG_C) | INC_FLAGS[val];
-    return 8;
 }
 
-int op_dd_fd_dec_ixh(CPU& cpu) {
+void op_dd_fd_dec_ixh(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = cpu._is_iy ? (cpu.regs.IY >> 8) & 0xFF : (cpu.regs.IX >> 8) & 0xFF;
     uint8_t nv = (val - 1) & 0xFF;
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0x00FF) | ((uint16_t)nv << 8);
     else cpu.regs.IX = (cpu.regs.IX & 0x00FF) | ((uint16_t)nv << 8);
     REG_F = (REG_F & FLAG_C) | DEC_FLAGS[val];
-    return 8;
 }
 
-int op_dd_fd_inc_ixl(CPU& cpu) {
+void op_dd_fd_inc_ixl(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = cpu._is_iy ? cpu.regs.IY & 0xFF : cpu.regs.IX & 0xFF;
     uint8_t nv = (val + 1) & 0xFF;
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0xFF00) | nv;
     else cpu.regs.IX = (cpu.regs.IX & 0xFF00) | nv;
     REG_F = (REG_F & FLAG_C) | INC_FLAGS[val];
-    return 8;
 }
 
-int op_dd_fd_dec_ixl(CPU& cpu) {
+void op_dd_fd_dec_ixl(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val = cpu._is_iy ? cpu.regs.IY & 0xFF : cpu.regs.IX & 0xFF;
     uint8_t nv = (val - 1) & 0xFF;
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0xFF00) | nv;
     else cpu.regs.IX = (cpu.regs.IX & 0xFF00) | nv;
     REG_F = (REG_F & FLAG_C) | DEC_FLAGS[val];
-    return 8;
 }
 
-int op_dd_fd_ld_ixh_n(CPU& cpu) {
-    uint8_t val = READ_PC(2);
+void op_dd_fd_ld_ixh_n(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t val = cpu._bus_read(cpu.regs.PC++);
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0x00FF) | ((uint16_t)val << 8);
     else cpu.regs.IX = (cpu.regs.IX & 0x00FF) | ((uint16_t)val << 8);
-    return 11;
 }
 
-int op_dd_fd_ld_ixl_n(CPU& cpu) {
-    uint8_t val = READ_PC(2);
+void op_dd_fd_ld_ixl_n(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t val = cpu._bus_read(cpu.regs.PC++);
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0xFF00) | val;
     else cpu.regs.IX = (cpu.regs.IX & 0xFF00) | val;
-    return 11;
 }
 
-int op_dd_fd_ld_r_ixh(CPU& cpu) {
-    uint8_t dest = (OPCODE >> 3) & 7;
+void op_dd_fd_ld_r_ixh(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t dest = (opcode >> 3) & 7;
     uint8_t val = cpu._is_iy ? (cpu.regs.IY >> 8) & 0xFF : (cpu.regs.IX >> 8) & 0xFF;
     switch (dest) {
         case 0: REG_B = val; break;
@@ -1623,11 +1692,11 @@ int op_dd_fd_ld_r_ixh(CPU& cpu) {
         case 3: REG_E = val; break;
         default: REG_A = val; break;
     }
-    return 8;
 }
 
-int op_dd_fd_ld_r_ixl(CPU& cpu) {
-    uint8_t dest = (OPCODE >> 3) & 7;
+void op_dd_fd_ld_r_ixl(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t dest = (opcode >> 3) & 7;
     uint8_t val = cpu._is_iy ? cpu.regs.IY & 0xFF : cpu.regs.IX & 0xFF;
     switch (dest) {
         case 0: REG_B = val; break;
@@ -1636,11 +1705,11 @@ int op_dd_fd_ld_r_ixl(CPU& cpu) {
         case 3: REG_E = val; break;
         default: REG_A = val; break;
     }
-    return 8;
 }
 
-int op_dd_fd_ld_ixh_r(CPU& cpu) {
-    uint8_t src = OPCODE & 7;
+void op_dd_fd_ld_ixh_r(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t src = opcode & 7;
     uint8_t val;
     switch (src) {
         case 0: val = REG_B; break;
@@ -1651,11 +1720,11 @@ int op_dd_fd_ld_ixh_r(CPU& cpu) {
     }
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0x00FF) | ((uint16_t)val << 8);
     else cpu.regs.IX = (cpu.regs.IX & 0x00FF) | ((uint16_t)val << 8);
-    return 8;
 }
 
-int op_dd_fd_ld_ixl_r(CPU& cpu) {
-    uint8_t src = OPCODE & 7;
+void op_dd_fd_ld_ixl_r(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t src = opcode & 7;
     uint8_t val;
     switch (src) {
         case 0: val = REG_B; break;
@@ -1666,36 +1735,36 @@ int op_dd_fd_ld_ixl_r(CPU& cpu) {
     }
     if (cpu._is_iy) cpu.regs.IY = (cpu.regs.IY & 0xFF00) | val;
     else cpu.regs.IX = (cpu.regs.IX & 0xFF00) | val;
-    return 8;
 }
 
-int op_dd_fd_ld_ixh_ixh(CPU& cpu) { return 8; }
-int op_dd_fd_ld_ixh_ixl(CPU& cpu) {
+void op_dd_fd_ld_ixh_ixh(CPU& cpu) { cpu._bus_fetch(cpu.regs.PC++); }
+void op_dd_fd_ld_ixh_ixl(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val;
     if (cpu._is_iy) { val = cpu.regs.IY & 0xFF; cpu.regs.IY = (cpu.regs.IY & 0x00FF) | ((uint16_t)val << 8); }
     else { val = cpu.regs.IX & 0xFF; cpu.regs.IX = (cpu.regs.IX & 0x00FF) | ((uint16_t)val << 8); }
-    return 8;
 }
-int op_dd_fd_ld_ixl_ixh(CPU& cpu) {
+void op_dd_fd_ld_ixl_ixh(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     uint8_t val;
     if (cpu._is_iy) { val = (cpu.regs.IY >> 8) & 0xFF; cpu.regs.IY = (cpu.regs.IY & 0xFF00) | val; }
     else { val = (cpu.regs.IX >> 8) & 0xFF; cpu.regs.IX = (cpu.regs.IX & 0xFF00) | val; }
-    return 8;
 }
-int op_dd_fd_ld_ixl_ixl(CPU& cpu) { return 8; }
+void op_dd_fd_ld_ixl_ixl(CPU& cpu) { cpu._bus_fetch(cpu.regs.PC++); }
 
-int op_dd_fd_ld_a_ixh(CPU& cpu) {
+void op_dd_fd_ld_a_ixh(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     REG_A = cpu._is_iy ? (cpu.regs.IY >> 8) & 0xFF : (cpu.regs.IX >> 8) & 0xFF;
-    return 8;
 }
-int op_dd_fd_ld_a_ixl(CPU& cpu) {
+void op_dd_fd_ld_a_ixl(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);
     REG_A = cpu._is_iy ? cpu.regs.IY & 0xFF : cpu.regs.IX & 0xFF;
-    return 8;
 }
 
 // ALU with IXH/IXL
-int op_dd_fd_alu_ixh(CPU& cpu) {
-    uint8_t alu_op = (OPCODE >> 3) & 7;
+void op_dd_fd_alu_ixh(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t alu_op = (opcode >> 3) & 7;
     uint8_t b = cpu._is_iy ? (cpu.regs.IY >> 8) & 0xFF : (cpu.regs.IX >> 8) & 0xFF;
     uint8_t a = REG_A;
     switch (alu_op) {
@@ -1708,11 +1777,11 @@ int op_dd_fd_alu_ixh(CPU& cpu) {
         case 6: REG_A |= b; REG_F = SZ53P_TABLE[REG_A]; break;
         case 7: REG_F = (SUB_FLAGS[(a << 8) | b] & ~(FLAG_F3 | FLAG_F5)) | (b & (FLAG_F3 | FLAG_F5)); break;
     }
-    return 8;
 }
 
-int op_dd_fd_alu_ixl(CPU& cpu) {
-    uint8_t alu_op = (OPCODE >> 3) & 7;
+void op_dd_fd_alu_ixl(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    uint8_t alu_op = (opcode >> 3) & 7;
     uint8_t b = cpu._is_iy ? cpu.regs.IY & 0xFF : cpu.regs.IX & 0xFF;
     uint8_t a = REG_A;
     switch (alu_op) {
@@ -1725,14 +1794,16 @@ int op_dd_fd_alu_ixl(CPU& cpu) {
         case 6: REG_A |= b; REG_F = SZ53P_TABLE[REG_A]; break;
         case 7: REG_F = (SUB_FLAGS[(a << 8) | b] & ~(FLAG_F3 | FLAG_F5)) | (b & (FLAG_F3 | FLAG_F5)); break;
     }
-    return 8;
 }
 
-int op_dd_fd_alu_ixd(CPU& cpu) {
-    uint8_t alu_op = (OPCODE >> 3) & 7;
+void op_dd_fd_alu_ixd(CPU& cpu) {
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
+    cpu.current_opcode = opcode;
+    uint8_t alu_op = (opcode >> 3) & 7;
     uint16_t addr = _get_ix_addr(cpu);
     uint8_t b = MEM_RD(addr);
     uint8_t a = REG_A;
+    cpu._wait(5);
     switch (alu_op) {
         case 0: REG_A = (a + b) & 0xFF; REG_F = ADD_FLAGS[(a << 8) | b]; break;
         case 1: { uint8_t c = REG_F & FLAG_C; REG_A = (a + b + c) & 0xFF; REG_F = (c ? ADC_FLAGS : ADD_FLAGS)[(a << 8) | b]; break; }
@@ -1743,45 +1814,58 @@ int op_dd_fd_alu_ixd(CPU& cpu) {
         case 6: REG_A |= b; REG_F = SZ53P_TABLE[REG_A]; break;
         case 7: REG_F = (SUB_FLAGS[(a << 8) | b] & ~(FLAG_F3 | FLAG_F5)) | (b & (FLAG_F3 | FLAG_F5)); break;
     }
-    return 19;
 }
 
 // ADC/SBC IX/IY,rr
-int op_dd_fd_adc_ix_rr(CPU& cpu) {
-    int pair = (OPCODE - 0x4A) >> 4;  // 0x4A->0, 0x5A->1, 0x6A->2, 0x7A->3
+void op_dd_fd_adc_ix_rr(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);  // Consume ED byte (4T M1)
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);  // Consume actual opcode (4T M1)
+    cpu.current_opcode = opcode;
+    int pair = (opcode - 0x4A) >> 4;
     uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
     uint8_t carry = REG_F & FLAG_C;
     uint16_t src = (pair == 2) ? ix : cpu.regs.get_reg16(pair);
+    cpu._wait(3); // 15T total: 4(DD) + 4(ED) + 4(opcode) + 3(internal)
     uint16_t result = (ix + src + carry) & 0xFFFF;
     if (cpu._is_iy) cpu.regs.IY = result;
     else cpu.regs.IX = result;
     REG_F = adc16_flags(ix, src, carry);
-    return 15;
 }
 
-int op_dd_fd_sbc_ix_rr(CPU& cpu) {
-    int pair = (OPCODE - 0x42) >> 4;  // 0x42->0, 0x52->1, 0x62->2, 0x72->3
+void op_dd_fd_sbc_ix_rr(CPU& cpu) {
+    cpu._bus_fetch(cpu.regs.PC++);  // Consume ED byte (4T M1)
+    uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);  // Consume actual opcode (4T M1)
+    cpu.current_opcode = opcode;
+    int pair = (opcode - 0x42) >> 4;
     uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
     uint8_t carry = REG_F & FLAG_C;
     uint16_t src = (pair == 2) ? ix : cpu.regs.get_reg16(pair);
+    cpu._wait(3); // 15T total: 4(DD) + 4(ED) + 4(opcode) + 3(internal)
     uint16_t result = (ix - src - carry) & 0xFFFF;
     if (cpu._is_iy) cpu.regs.IY = result;
     else cpu.regs.IX = result;
     REG_F = sbc16_flags(ix, src, carry);
-    return 15;
 }
 
 // ============================================================
 // DDCB/FDCB handlers
 // ============================================================
-int op_ddcb_fdcb_rot(CPU& cpu) {
-    uint8_t op_idx = (OPCODE >> 3) & 7;
-    uint8_t dest = OPCODE & 7;
-    uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = MEM_RD(addr);
+void op_ddcb_fdcb_rot(CPU& cpu) {
+    // DDCB/FDCB ROTATE: 23T = 4(DD) + 3(CB) + 3(displacement) + 3(opcode) + 4(internal) + 3(read) + 3(write)
+    cpu._bus_read(cpu.regs.PC++);  // skip CB prefix, 3T
+    uint8_t disp = cpu._bus_read(cpu.regs.PC++);  // displacement, 3T
+    uint8_t opcode = cpu._bus_read(cpu.regs.PC++);  // actual opcode, 3T
+    cpu.current_opcode = opcode;
+    uint8_t op_idx = (opcode >> 3) & 7;
+    uint8_t dest = opcode & 7;
+    int16_t d = (int8_t)disp;
+    uint16_t base = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    uint16_t addr = (base + d) & 0xFFFF;
+    cpu.regs.MEMPTR = addr;
+    cpu._wait(4);  // Internal operations, 4T
+    uint8_t val = cpu._bus_read(addr);  // Read memory, 3T
     uint8_t old_carry = REG_F & FLAG_C;
     uint8_t result, carry;
-    // Use ROT tables for ops 0,1,4,5,6,7; RL/RR need carry
     if (op_idx == 2) { // RL
         result = old_carry ? RL_CARRY_1[val] : RL_CARRY_0[val];
         carry = (val >> 7) & 1;
@@ -1792,7 +1876,7 @@ int op_ddcb_fdcb_rot(CPU& cpu) {
         result = ROT_RESULT[op_idx][val];
         carry = ROT_CARRY[op_idx][val];
     }
-    MEM_WR(addr, result);
+    cpu._bus_write(addr, result);  // Write memory, 3T
     if (dest != 6) {
         switch (dest) {
             case 0: REG_B = result; break;
@@ -1808,28 +1892,43 @@ int op_ddcb_fdcb_rot(CPU& cpu) {
     if (result == 0) REG_F |= FLAG_Z;
     if (PARITY_TABLE[result]) REG_F |= FLAG_PV;
     if (carry) REG_F |= FLAG_C;
-    return 23;
 }
 
-int op_ddcb_fdcb_bit(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
-    uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = MEM_RD(addr);
+void op_ddcb_fdcb_bit(CPU& cpu) {
+    // DDCB/FDCB BIT: 20T = 4(DD) + 3(CB) + 3(displacement) + 3(opcode) + 3(read) + 4(internal)
+    cpu._bus_read(cpu.regs.PC++);  // skip CB prefix, 3T
+    uint8_t disp = cpu._bus_read(cpu.regs.PC++);  // displacement, 3T
+    uint8_t opcode = cpu._bus_read(cpu.regs.PC++);  // actual opcode, 3T
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
+    int16_t d = (int8_t)disp;
+    uint16_t base = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    uint16_t addr = (base + d) & 0xFFFF;
+    uint8_t val = cpu._bus_read(addr);  // Read memory, 3T
     uint8_t test = val & BIT_MASK[bit];
+    cpu._wait(4);  // Internal for BIT, 4T
     REG_F = FLAG_H | (REG_F & FLAG_C);
     if (test == 0) REG_F |= FLAG_Z | FLAG_PV;
     if (bit == 7 && test) REG_F |= FLAG_S;
     REG_F |= (addr >> 8) & (FLAG_F3 | FLAG_F5);
-    return 20;
 }
 
-int op_ddcb_fdcb_res(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
-    uint8_t dest = OPCODE & 7;
-    uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = MEM_RD(addr);
+void op_ddcb_fdcb_res(CPU& cpu) {
+    // DDCB/FDCB RES: 23T = 4(DD) + 3(CB) + 3(displacement) + 3(opcode) + 4(internal) + 3(read) + 3(write)
+    cpu._bus_read(cpu.regs.PC++);  // skip CB prefix, 3T
+    uint8_t disp = cpu._bus_read(cpu.regs.PC++);  // displacement, 3T
+    uint8_t opcode = cpu._bus_read(cpu.regs.PC++);  // actual opcode, 3T
+    cpu.current_opcode = opcode;
+    uint8_t bit = (opcode >> 3) & 7;
+    uint8_t dest = opcode & 7;
+    int16_t d = (int8_t)disp;
+    uint16_t base = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    uint16_t addr = (base + d) & 0xFFFF;
+    cpu.regs.MEMPTR = addr;
+    cpu._wait(4);  // Internal operations, 4T
+    uint8_t val = cpu._bus_read(addr);  // Read memory, 3T
     uint8_t result = val & RES_MASK[bit];
-    MEM_WR(addr, result);
+    cpu._bus_write(addr, result);  // Write memory, 3T
     if (dest != 6) {
         switch (dest) {
             case 0: REG_B = result; break;
@@ -1841,16 +1940,28 @@ int op_ddcb_fdcb_res(CPU& cpu) {
             default: REG_A = result; break;
         }
     }
-    return 23;
 }
 
-int op_ddcb_fdcb_set(CPU& cpu) {
-    uint8_t bit = (OPCODE >> 3) & 7;
-    uint8_t dest = OPCODE & 7;
-    uint16_t addr = _get_ix_addr(cpu);
-    uint8_t val = MEM_RD(addr);
+void op_ddcb_fdcb_set(CPU& cpu) {
+    // DDCB/FDCB SET: 23T = 4(DD) + 3(CB) + 3(displacement) + 3(opcode) + 4(internal) + 3(read) + 3(write)
+    cpu._bus_read(cpu.regs.PC++);  // skip CB prefix, 3T
+    uint8_t disp = cpu._bus_read(cpu.regs.PC++);  // displacement, 3T
+    uint8_t opcode = cpu._bus_read(cpu.regs.PC++);  // actual opcode, 3T
+    cpu.current_opcode = opcode;
+    
+    // Calculate address
+    int16_t d = (int8_t)disp;
+    uint16_t base = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    uint16_t addr = (base + d) & 0xFFFF;
+    cpu.regs.MEMPTR = addr;
+    
+    cpu._wait(4);  // Internal operations: 4T
+    uint8_t val = cpu._bus_read(addr);  // Read memory, 3T
+    uint8_t bit = (opcode >> 3) & 7;
+    uint8_t dest = opcode & 7;
     uint8_t result = val | BIT_MASK[bit];
-    MEM_WR(addr, result);
+    cpu._bus_write(addr, result);  // Write memory, 3T
+    
     if (dest != 6) {
         switch (dest) {
             case 0: REG_B = result; break;
@@ -1862,6 +1973,5 @@ int op_ddcb_fdcb_set(CPU& cpu) {
             default: REG_A = result; break;
         }
     }
-    return 23;
 }
 

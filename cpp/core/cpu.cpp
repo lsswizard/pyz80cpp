@@ -18,7 +18,6 @@ CPU::CPU(Bus* b) : bus(b), cycles(0), instruction_count(0), halted(false),
     _is_simple_bus = false;
 
     // Check if bus is SimpleBus for fast path
-    // We store the memory pointer directly for fast access
     auto* sb = dynamic_cast<SimpleBus*>(bus);
     if (sb) {
         _mem = sb->memory;
@@ -50,29 +49,33 @@ void CPU::reset() {
 }
 
 int CPU::step() {
-    // Handle NMI (non-maskable interrupt) - takes priority
-    if (nmi_pending) {
-        nmi_pending = false;
-        regs.IFF2 = regs.IFF1;
-        regs.IFF1 = false;
-        regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
-        // When halted, return address is PC+1 (past the HALT)
-        uint16_t ret_addr = halted ? ((regs.PC + 1) & 0xFFFF) : regs.PC;
-        halted = false;
-        regs.SP = (regs.SP - 2) & 0xFFFF;
-        _bus_write_direct(regs.SP, ret_addr & 0xFF, cycles);
-        _bus_write_direct((regs.SP + 1) & 0xFFFF, ret_addr >> 8, cycles);
-        regs.PC = 0x0066;
-        cycles += 11;
-        return 11;
-    }
+    int start_cycles = cycles;
+    uint16_t pc = regs.PC;
 
-    // EI deferral logic: resolve EI, then handle interrupt on same step
+    // EI deferral logic
     if (regs.EI_PENDING) {
         regs.EI_PENDING = false;
         regs.EI_JUST_RESOLVED = true;
         regs.IFF1 = true;
         regs.IFF2 = true;
+    }
+
+    // Handle NMI (non-maskable interrupt)
+    if (nmi_pending) {
+        nmi_pending = false;
+        halted = false;
+        regs.IFF1 = false;
+        regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
+        // When exiting HALT, return address is PC+1 (past the HALT instruction)
+        uint16_t ret_addr = (regs.PC + 1) & 0xFFFF;
+        _wait(3); // 7T M1 instead of 4T
+        regs.SP = (regs.SP - 1) & 0xFFFF;
+        _bus_write(regs.SP, ret_addr >> 8);
+        regs.SP = (regs.SP - 1) & 0xFFFF;
+        _bus_write(regs.SP, ret_addr & 0xFF);
+        regs.PC = 0x0066;
+        regs.MEMPTR = 0x0066;
+        return 11;
     }
 
     // Handle maskable interrupt
@@ -81,157 +84,89 @@ int CPU::step() {
         halted = false;
         regs.IFF1 = false;
         regs.IFF2 = false;
+        // Interrupt is 13T: 7T+3T+3T
         regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
-        // When halted, return address is PC+1 (past the HALT)
         uint16_t ret_addr = halted ? ((regs.PC + 1) & 0xFFFF) : regs.PC;
-        regs.SP = (regs.SP - 2) & 0xFFFF;
-        _bus_write_direct(regs.SP, ret_addr & 0xFF, cycles);
-        _bus_write_direct((regs.SP + 1) & 0xFFFF, ret_addr >> 8, cycles);
+        _wait(3); // 7T M1 instead of 4T
+        regs.SP = (regs.SP - 1) & 0xFFFF;
+        _bus_write(regs.SP, ret_addr >> 8);
+        regs.SP = (regs.SP - 1) & 0xFFFF;
+        _bus_write(regs.SP, ret_addr & 0xFF);
 
-        // LD A,I / LD A,R interrupt bug: clear PV if previous instruction
-        // was LD A,I or LD A,R (the IFF2 was cleared before P/V could be set)
         if (_is_ld_a_ir) {
-            regs.F &= ~0x04; // Clear P/V flag (bit 2)
+            regs.F &= ~0x04;
         }
 
-        if (regs.IM == 0) {
-            // Mode 0: read instruction from bus (simplified: use RST 38h)
-            regs.PC = 0x0038;
-        } else if (regs.IM == 1) {
+        if (regs.IM == 0 || regs.IM == 1) {
             regs.PC = 0x0038;
         } else {
-            // Mode 2: vector table lookup
             uint16_t vector_addr = (uint16_t)((regs.I << 8) | (interrupt_data & 0xFE));
-            uint8_t lo = _bus_read(vector_addr, cycles);
-            uint8_t hi = _bus_read(vector_addr + 1, cycles);
+            uint8_t lo = _bus_read(vector_addr);
+            uint8_t hi = _bus_read(vector_addr + 1);
             regs.PC = (uint16_t)(lo | (hi << 8));
         }
-        cycles += 13;
         return 13;
     }
 
-    // Clear EI deferral flag AFTER interrupt check, so one instruction
-    // executes with EI_JUST_RESOLVED set (preventing interrupt acceptance)
     if (regs.EI_JUST_RESOLVED) {
         regs.EI_JUST_RESOLVED = false;
     }
 
     if (halted) {
+        // HALT: execute NOPs (4T)
         regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
         cycles += 4;
         return 4;
     }
 
-    uint16_t pc = regs.PC;
-    uint8_t opcode;
-    uint8_t b1, b2, b3;  // Next bytes for prefix handling
-
-    // Fast path: direct memory access for SimpleBus
-    if (_is_simple_bus) {
-        opcode = _mem[pc];
-        b1 = _mem[(pc + 1) & 0xFFFF];
-        b2 = _mem[(pc + 2) & 0xFFFF];
-        b3 = _mem[(pc + 3) & 0xFFFF];
-    } else {
-        opcode = bus->bus_read(pc, cycles);
-        b1 = bus->bus_read((pc + 1) & 0xFFFF, cycles);
-        b2 = bus->bus_read((pc + 2) & 0xFFFF, cycles);
-        b3 = bus->bus_read((pc + 3) & 0xFFFF, cycles);
-    }
+    // peek for decoding (does not add cycles)
+    uint8_t opcode = _is_simple_bus ? _mem[pc] : bus->bus_read(pc, cycles, CycleType::MEM_RD);
+    uint8_t b1 = _is_simple_bus ? _mem[(pc + 1) & 0xFFFF] : bus->bus_read((pc + 1) & 0xFFFF, cycles, CycleType::MEM_RD);
+    uint8_t b2 = _is_simple_bus ? _mem[(pc + 2) & 0xFFFF] : bus->bus_read((pc + 2) & 0xFFFF, cycles, CycleType::MEM_RD);
+    uint8_t b3 = _is_simple_bus ? _mem[(pc + 3) & 0xFFFF] : bus->bus_read((pc + 3) & 0xFFFF, cycles, CycleType::MEM_RD);
 
     DecodeSlot slot;
     if (_is_simple_bus) {
         slot = decoder.decode(_mem, pc);
     } else {
-        // For non-SimpleBus (e.g., CallbackBus), look up handler directly
-        if (opcode == 0xCB) {
-            slot = DecodeSlot{cb_handlers[b1].handler, cb_handlers[b1].cycles, 2, true, false};
-        } else if (opcode == 0xED) {
-            slot = DecodeSlot{ed_handlers[b1].handler, ed_handlers[b1].cycles, 2, ed_handlers[b1].affects_f, false};
-        } else if (opcode == 0xDD) {
-            if (b1 == 0xCB) {
-                slot = DecodeSlot{ddcb_handlers[b3].handler, ddcb_handlers[b3].cycles, 4, ddcb_handlers[b3].affects_f, false};
-            } else if (b1 == 0xED) {
-                slot = DecodeSlot{dd_ed_handlers[b2].handler, dd_ed_handlers[b2].cycles, dd_ed_handlers[b2].length, dd_ed_handlers[b2].affects_f, false};
-            } else if (dd_handlers[b1].handler) {
-                slot = DecodeSlot{dd_handlers[b1].handler, dd_handlers[b1].cycles, dd_handlers[b1].length, dd_handlers[b1].affects_f, false};
-            } else {
-                // DD prefix fallthrough: execute base instruction
-                // Temporarily advance PC so READ_PC works correctly
-                regs.PC = (pc + 1) & 0xFFFF;
-                slot = DecodeSlot{base_handlers[b1].handler, base_handlers[b1].cycles, (uint8_t)(base_handlers[b1].length + 1), base_handlers[b1].affects_f, base_handlers[b1].is_ld_a_ir};
-            }
-        } else if (opcode == 0xFD) {
-            if (b1 == 0xCB) {
-                slot = DecodeSlot{fdcb_handlers[b3].handler, fdcb_handlers[b3].cycles, 4, fdcb_handlers[b3].affects_f, false};
-            } else if (b1 == 0xED) {
-                slot = DecodeSlot{fd_ed_handlers[b2].handler, fd_ed_handlers[b2].cycles, fd_ed_handlers[b2].length, fd_ed_handlers[b2].affects_f, false};
-            } else if (fd_handlers[b1].handler) {
-                slot = DecodeSlot{fd_handlers[b1].handler, fd_handlers[b1].cycles, fd_handlers[b1].length, fd_handlers[b1].affects_f, false};
-            } else {
-                // FD prefix fallthrough: execute base instruction
-                // Temporarily advance PC so READ_PC works correctly
-                regs.PC = (pc + 1) & 0xFFFF;
-                slot = DecodeSlot{base_handlers[b1].handler, base_handlers[b1].cycles, (uint8_t)(base_handlers[b1].length + 1), base_handlers[b1].affects_f, base_handlers[b1].is_ld_a_ir};
-            }
-        } else {
-            slot = DecodeSlot{base_handlers[opcode].handler, base_handlers[opcode].cycles, base_handlers[opcode].length, base_handlers[opcode].affects_f, base_handlers[opcode].is_ld_a_ir};
-        }
+        slot = decoder.decode_from_bytes(opcode, b1, b2, b3);
     }
 
     if (slot.handler == nullptr) {
-        // Check for DD/FD prefix fallthrough (decoder returned null for non-indexed op)
-        if ((opcode == 0xDD || opcode == 0xFD) && b1 != 0xCB && b1 != 0xED) {
-            // Fallthrough: execute base instruction with adjusted PC
-            regs.PC = (pc + 1) & 0xFFFF;
-            current_opcode = b1;
+        // Check for DD/FD fallthrough
+        if (opcode == 0xDD || opcode == 0xFD) {
+            _bus_fetch(regs.PC++); // Fetch DD/FD (4T)
             _is_iy = (opcode == 0xFD);
-            _is_ld_a_ir = base_handlers[b1].is_ld_a_ir;
-            regs.R = (regs.R & 0x80) | ((regs.R + 2) & 0x7F);
+            // Fallthrough: execute base instruction
+            // We need to decode again starting at PC
+            uint16_t next_pc = regs.PC;
+            uint8_t next_op = _is_simple_bus ? _mem[next_pc] : bus->bus_read(next_pc, cycles, CycleType::MEM_RD);
+            // Just let the next call to step() handle it?
+            // No, prefixes are consumed in one instruction if they prefix something.
+            // But fallthrough means the prefix DID NOTHING and we just execute the next op.
+            // Actually Z80 consumes the prefix and executes the base op.
+            // So we stay in the same step().
+            current_opcode = _bus_fetch(regs.PC++); // Fetch next byte as opcode (4T)
+            auto base_slot = base_handlers[current_opcode];
+            _is_ld_a_ir = base_slot.is_ld_a_ir;
             _pc_modified = false;
-            int t = base_handlers[b1].handler(*this);
-            if (!_pc_modified) {
-                regs.PC = (pc + 1 + base_handlers[b1].length) & 0xFFFF;
-            }
-            cycles += base_handlers[b1].cycles;
+            base_slot.handler(*this);
             instruction_count++;
-            return base_handlers[b1].cycles;
+            return cycles - start_cycles;
         }
-        cycles += 4;
-        regs.PC = (pc + 1) & 0xFFFF;
+        // Truly unknown: 4T NOP
+        _bus_fetch(regs.PC++);
+        instruction_count++;
         return 4;
     }
 
-    // R register refresh
-    // For CB/DD/FD/ED prefixed instructions, R increments by 2
-    uint8_t r_inc = 1;
-    if (opcode == 0xCB || opcode == 0xDD || opcode == 0xFD || opcode == 0xED) {
-        r_inc = 2;
-    }
-    regs.R = (regs.R & 0x80) | ((regs.R + r_inc) & 0x7F);
-
-    // For CB/ED/DD/FD prefixed instructions, current_opcode must be the
-    // second byte (the actual operation), not the prefix byte
+    _bus_fetch(regs.PC++); // Fetch first opcode byte (4T)
     current_opcode = opcode;
     _pc_modified = false;
-    _is_ld_a_ir = false;
-    _is_iy = false;
+    _is_ld_a_ir = slot.is_ld_a_ir;
+    _is_iy = (opcode == 0xFD);
 
-    if (opcode == 0xCB || opcode == 0xED) {
-        current_opcode = b1;
-    } else if (opcode == 0xDD || opcode == 0xFD) {
-        _is_iy = (opcode == 0xFD);
-        if (b1 == 0xCB) {
-            current_opcode = b3;
-        } else if (b1 == 0xED) {
-            current_opcode = b2;
-        } else {
-            current_opcode = b1;
-        }
-    }
-
-    int start_cycles = cycles;
-    int t = slot.handler(*this);
+    slot.handler(*this);
 
     // Q factor tracking
     regs.LAST_Q = regs.Q;
@@ -241,25 +176,16 @@ int CPU::step() {
         regs.Q = 0;
     }
 
-    if (!_pc_modified) {
-        regs.PC = (pc + slot.length) & 0xFFFF;
-    }
-
-    cycles += t;
     instruction_count++;
-    // Return total cycles consumed including contention delays
-    // (bus callbacks may add to cycles during handler execution)
     return cycles - start_cycles;
 }
 
 int CPU::run_frame(int t_states_per_frame) {
-    int start_cycles = cycles;
     int target = cycles + t_states_per_frame;
-
     while (cycles < target) {
         step();
     }
-    return cycles - start_cycles;
+    return cycles;
 }
 
 int CPU::run(int max_cycles) {
@@ -295,7 +221,7 @@ uint8_t CPU::read_reg8(int reg) {
         case 3: return regs.E;
         case 4: return regs.H;
         case 5: return regs.L;
-        case 6: return _bus_read(regs.HL(), cycles);
+        case 6: return _bus_read(regs.HL());
         default: return regs.A;
     }
 }
@@ -308,7 +234,7 @@ void CPU::write_reg8(int reg, uint8_t value) {
         case 3: regs.E = value; break;
         case 4: regs.H = value; break;
         case 5: regs.L = value; break;
-        case 6: _bus_write(regs.HL(), value, cycles); break;
+        case 6: _bus_write(regs.HL(), value); break;
         default: regs.A = value; break;
     }
 }
