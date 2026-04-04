@@ -10,3 +10,8 @@ dependencies = []
 
 [tool.scikit-build]
 cmake.source-dir = "."
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [".venv"]
+python_files = ["test_validate_z80.py"]
