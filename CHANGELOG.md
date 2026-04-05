@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] — 2026-04-05
+
+### Added
+
+- Test suite reorganized into 28 small test files for better maintainability
+- New tests: DD/FD prefix fallthrough, Q factor, CCF H flag, comprehensive DAA, IX/IY edge cases
+
+### Changed
+
+- **Test organization**: Split monolithic `test_validate_z80.py` (4800+ lines) into ~28 focused test files in `tests/`
+- **Test fixtures**: New `conftest.py` with shared fixtures (`cpu`, `write_program`, `step_n`, flag helpers)
+- **`pyproject.toml`**: Updated `python_files` pattern to discover `test_*.py` files
+
+### Fixed
+
+- **IM 0**: Now handles full instruction execution (not just RST vectors)
+- **Q factor**: Fixed to check `old_f != new_f` before setting Q flags (Patrik Rak discovery)
+- **NEG**: Added missing F3/F5 flag handling
+- **_in_out_flags**: Added F3/F5 handling
+- **MEMPTR**: Fixed on numerous instructions (JP, CALL, RET, RST, EX (SP),HL, PUSH/POP IX/IY, IN/OUT (C),r, block I/O, CP, LD SP,HL, LD rr,nn)
+- **IM 2 timing**: Fixed (was returning 13T, should be 19T)
+- **DD/FD fallthrough**: Fixed chained prefix handling (DD DD NOP now works)
+- **Parity table**: 0xFF has even parity (corrected test expectation)
+- **XOR F3/F5**: Flags come from result, not operand (matching real Z80)
+- **RLD/RRD**: Carry flag preserved from previous state
+- **DDCB RL/RR**: Carry flag reflects bit 0 of result (not cleared)
+- **CPIR**: Sets Z flag when match is found
+- **Block instructions**: Use `step_n()` for repeat behavior
+- **EI deferral**: IFF1 enabled after NEXT instruction (not immediately)
+- **JR backward wrap**: PC wraps to 0xFFFF (not 0x0000)
+
 ## [2.1.0] — 2026-04-04
 
 ### Added

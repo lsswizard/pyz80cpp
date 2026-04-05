@@ -97,15 +97,27 @@ int CPU::step() {
             regs.F &= ~0x04;
         }
 
-        if (regs.IM == 0 || regs.IM == 1) {
+        if (regs.IM == 0) {
+            uint8_t opcode = interrupt_data;
+            if ((opcode & 0xC7) == 0xC7) {
+                regs.PC = opcode & 0x38;
+            } else {
+                regs.PC = 0x0038;
+            }
+            regs.MEMPTR = regs.PC;
+            return 13;
+        } else if (regs.IM == 1) {
             regs.PC = 0x0038;
+            regs.MEMPTR = 0x0038;
+            return 13;
         } else {
             uint16_t vector_addr = (uint16_t)((regs.I << 8) | (interrupt_data & 0xFE));
             uint8_t lo = _bus_read(vector_addr);
-            uint8_t hi = _bus_read(vector_addr + 1);
-            regs.PC = (uint16_t)(lo | (hi << 8));
+            uint8_t hi = _bus_read((vector_addr + 1) & 0xFFFF);
+            regs.MEMPTR = (uint16_t)(lo | (hi << 8));
+            regs.PC = regs.MEMPTR;
+            return 19;
         }
-        return 13;
     }
 
     if (regs.EI_JUST_RESOLVED) {
@@ -137,22 +149,29 @@ int CPU::step() {
         if (opcode == 0xDD || opcode == 0xFD) {
             _bus_fetch(regs.PC++); // Fetch DD/FD (4T)
             _is_iy = (opcode == 0xFD);
-            // Fallthrough: execute base instruction
-            // We need to decode again starting at PC
-            uint16_t next_pc = regs.PC;
-            uint8_t next_op = _is_simple_bus ? _mem[next_pc] : bus->bus_read(next_pc, cycles, CycleType::MEM_RD);
-            // Just let the next call to step() handle it?
-            // No, prefixes are consumed in one instruction if they prefix something.
-            // But fallthrough means the prefix DID NOTHING and we just execute the next op.
-            // Actually Z80 consumes the prefix and executes the base op.
-            // So we stay in the same step().
-            current_opcode = _bus_fetch(regs.PC++); // Fetch next byte as opcode (4T)
-            auto base_slot = base_handlers[current_opcode];
-            _is_ld_a_ir = base_slot.is_ld_a_ir;
-            _pc_modified = false;
-            base_slot.handler(*this);
-            instruction_count++;
-            return cycles - start_cycles;
+            // Consume all consecutive DD/FD prefixes
+            while (true) {
+                uint16_t next_pc = regs.PC;
+                uint8_t next_op = _is_simple_bus ? _mem[next_pc] : bus->bus_read(next_pc, cycles, CycleType::MEM_RD);
+                if (next_op == 0xDD || next_op == 0xFD) {
+                    _bus_fetch(regs.PC++); // Fetch next prefix (4T)
+                    _is_iy = (next_op == 0xFD);
+                    continue;
+                }
+                // Execute the base instruction
+                current_opcode = _bus_fetch(regs.PC++); // Fetch actual opcode (4T)
+                auto base_slot = base_handlers[current_opcode];
+                if (base_slot.handler == nullptr) {
+                    // Unknown base opcode after prefix - treat as NOP
+                    instruction_count++;
+                    return cycles - start_cycles;
+                }
+                _is_ld_a_ir = base_slot.is_ld_a_ir;
+                _pc_modified = false;
+                base_slot.handler(*this);
+                instruction_count++;
+                return cycles - start_cycles;
+            }
         }
         // Truly unknown: 4T NOP
         _bus_fetch(regs.PC++);
@@ -166,11 +185,13 @@ int CPU::step() {
     _is_ld_a_ir = slot.is_ld_a_ir;
     _is_iy = (opcode == 0xFD);
 
+    uint8_t old_f = regs.F;
     slot.handler(*this);
 
-    // Q factor tracking
+    // Q factor tracking (Patrik Rak discovery)
+    // Q = new F if flags actually changed, unless EX AF,AF' or POP AF
     regs.LAST_Q = regs.Q;
-    if (slot.affects_f) {
+    if (slot.affects_f && regs.F != old_f && opcode != 0x08 && opcode != 0xF1) {
         regs.Q = regs.F;
     } else {
         regs.Q = 0;

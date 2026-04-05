@@ -186,6 +186,7 @@ void op_ld_rr_nn(CPU& cpu) {
     uint8_t lo = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
     uint16_t val = lo | (hi << 8);
+    cpu.regs.MEMPTR = (cpu.regs.PC) & 0xFFFF;
     cpu.regs.set_reg16(pair, val);
 }
 
@@ -193,6 +194,7 @@ void op_ld_hl_nn(CPU& cpu) {
     uint8_t pclo = cpu._bus_read(cpu.regs.PC++);
     uint8_t pchi = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = pclo | (pchi << 8);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     uint8_t lo = MEM_RD(addr);
     uint8_t hi = MEM_RD((addr + 1) & 0xFFFF);
     SET_HL((uint16_t)(lo | (hi << 8)));
@@ -202,6 +204,7 @@ void op_ld_nn_hl(CPU& cpu) {
     uint8_t lo = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = lo | (hi << 8);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     MEM_WR(addr, REG_L);
     MEM_WR((addr + 1) & 0xFFFF, REG_H);
 }
@@ -214,6 +217,7 @@ void op_ld_sp_hl(CPU& cpu) {
 void op_push_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
     uint16_t val = cpu.regs.get_reg16_push(pair);
+    cpu.regs.MEMPTR = (cpu.regs.SP - 1) & 0xFFFF;
     cpu._wait(1); // Internal execution (1T)
     cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
     MEM_WR(cpu.regs.SP, val >> 8);
@@ -224,6 +228,7 @@ void op_push_rr(CPU& cpu) {
 void op_pop_rr(CPU& cpu) {
     int pair = (OPCODE >> 4) & 3;
     uint16_t sp = cpu.regs.SP;
+    cpu.regs.MEMPTR = (sp + 1) & 0xFFFF;
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     cpu.regs.SP = (sp + 2) & 0xFFFF;
@@ -249,6 +254,7 @@ void op_ex_sp_hl(CPU& cpu) {
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     uint16_t temp = (uint16_t)(lo | (hi << 8));
+    cpu.regs.MEMPTR = (sp + 1) & 0xFFFF;
     cpu._wait(1); // Internal execution before write (1T)
     MEM_WR((sp + 1) & 0xFFFF, REG_H);
     MEM_WR(sp, REG_L);
@@ -484,6 +490,7 @@ static inline void _alu_cp(CPU& cpu, uint8_t b) {
 void op_cp(CPU& cpu) {
     uint8_t src = OPCODE & 7;
     if (src == 6) {
+        cpu.regs.MEMPTR = REG_HL;
         uint8_t b = MEM_RD(REG_HL);
         _alu_cp(cpu, b);
         return;
@@ -503,6 +510,7 @@ void op_cp(CPU& cpu) {
 
 void op_cp_n(CPU& cpu) {
     uint8_t b = cpu._bus_read(cpu.regs.PC++);
+    cpu.regs.MEMPTR = cpu.regs.PC;
     _alu_cp(cpu, b);
 }
 
@@ -671,7 +679,8 @@ void op_scf(CPU& cpu) {
 void op_jp_nn(CPU& cpu) {
     uint8_t lo = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
-    cpu.regs.PC = lo | (hi << 8);
+    cpu.regs.MEMPTR = lo | (hi << 8);
+    cpu.regs.PC = cpu.regs.MEMPTR;
     cpu._pc_modified = true;
 }
 
@@ -679,8 +688,10 @@ void op_jp_cc_nn(CPU& cpu) {
     int cc = (OPCODE >> 3) & 7;
     uint8_t lo = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
+    uint16_t addr = lo | (hi << 8);
     if (cpu.check_condition(cc)) {
-        cpu.regs.PC = lo | (hi << 8);
+        cpu.regs.MEMPTR = addr;
+        cpu.regs.PC = addr;
         cpu._pc_modified = true;
     }
 }
@@ -692,8 +703,9 @@ void op_jp_hl(CPU& cpu) {
 
 void op_jr_e(CPU& cpu) {
     int8_t offset = (int8_t)cpu._bus_read(cpu.regs.PC++);
+    cpu.regs.MEMPTR = (cpu.regs.PC + offset) & 0xFFFF;
     cpu._wait(5); // JR e takes 12T (4+3+5)
-    cpu.regs.PC = (cpu.regs.PC + offset) & 0xFFFF;
+    cpu.regs.PC = cpu.regs.MEMPTR;
     cpu._pc_modified = true;
 }
 
@@ -701,8 +713,9 @@ void op_jr_cc_e(CPU& cpu) {
     int cc = (OPCODE >> 3) & 3;  // JR cc: 4->0(NZ), 5->1(Z), 6->2(NC), 7->3(C)
     int8_t offset = (int8_t)cpu._bus_read(cpu.regs.PC++);
     if (cpu.check_condition(cc)) {
+        cpu.regs.MEMPTR = (cpu.regs.PC + offset) & 0xFFFF;
         cpu._wait(5); // JR cc,e takes 12T (4+3+5)
-        cpu.regs.PC = (cpu.regs.PC + offset) & 0xFFFF;
+        cpu.regs.PC = cpu.regs.MEMPTR;
         cpu._pc_modified = true;
     }
 }
@@ -713,8 +726,9 @@ void op_djnz_e(CPU& cpu) {
     cpu._wait(1);  // Internal operation to decrement B
     REG_B = (REG_B - 1) & 0xFF;
     if (REG_B != 0) {
+        cpu.regs.MEMPTR = (cpu.regs.PC + offset) & 0xFFFF;
         cpu._wait(5);  // branch: 5T total for PC update
-        cpu.regs.PC = (cpu.regs.PC + offset) & 0xFFFF;
+        cpu.regs.PC = cpu.regs.MEMPTR;
         cpu._pc_modified = true;
     }
 }
@@ -724,6 +738,7 @@ void op_call_nn(CPU& cpu) {
     uint8_t lo = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = lo | (hi << 8);
+    cpu.regs.MEMPTR = addr;
     uint16_t ret = cpu.regs.PC;
     cpu._wait(1); // Internal execution (1T)
     cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
@@ -740,6 +755,7 @@ void op_call_cc_nn(CPU& cpu) {
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = lo | (hi << 8);
     if (cpu.check_condition(cc)) {
+        cpu.regs.MEMPTR = addr;
         uint16_t ret = cpu.regs.PC;
         cpu._wait(1);
         cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
@@ -757,7 +773,8 @@ void op_ret(CPU& cpu) {
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     cpu.regs.SP = (sp + 2) & 0xFFFF;
-    cpu.regs.PC = (uint16_t)(lo | (hi << 8));
+    cpu.regs.MEMPTR = (uint16_t)(lo | (hi << 8));
+    cpu.regs.PC = cpu.regs.MEMPTR;
     cpu._pc_modified = true;
 }
 
@@ -770,7 +787,8 @@ void op_ret_cc(CPU& cpu) {
         uint8_t lo = MEM_RD(sp);
         uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
         cpu.regs.SP = (sp + 2) & 0xFFFF;
-        cpu.regs.PC = (uint16_t)(lo | (hi << 8));
+        cpu.regs.MEMPTR = (uint16_t)(lo | (hi << 8));
+        cpu.regs.PC = cpu.regs.MEMPTR;
         cpu._pc_modified = true;
     }
 }
@@ -780,6 +798,7 @@ void op_rst(CPU& cpu) {
     int p = (OPCODE >> 3) & 7;
     uint16_t addr = (uint16_t)(p * 8);
     uint16_t ret = cpu.regs.PC;
+    cpu.regs.MEMPTR = addr;
     cpu._wait(1);
     cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
     MEM_WR(cpu.regs.SP, ret >> 8);
@@ -793,12 +812,14 @@ void op_rst(CPU& cpu) {
 void op_in_a_n(CPU& cpu) {
     uint8_t port = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = (uint16_t)((REG_A << 8) | port);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     REG_A = IO_RD(addr);
 }
 
 void op_out_n_a(CPU& cpu) {
     uint8_t port = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = (uint16_t)((REG_A << 8) | port);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     IO_WR(addr, REG_A);
 }
 
@@ -1124,6 +1145,7 @@ void op_cpdr(CPU& cpu) {
 
 static inline void _in_out_flags(CPU& cpu, uint8_t value, uint8_t old_b, uint8_t new_b) {
     uint8_t f = REG_F & FLAG_C;
+    f |= (value & (FLAG_F3 | FLAG_F5));
     if (value & 0x80) f |= FLAG_N;
     if (new_b & 0x80) f |= FLAG_S;
     if (new_b == 0) f |= FLAG_Z;
@@ -1140,6 +1162,7 @@ void op_ini(CPU& cpu) {
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     SET_HL((REG_HL + 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C + 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
 }
 
@@ -1151,6 +1174,7 @@ void op_inir(CPU& cpu) {
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     SET_HL((REG_HL + 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C + 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
     if (REG_B != 0) {
         cpu._wait(5); // 21T
@@ -1167,6 +1191,7 @@ void op_ind(CPU& cpu) {
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     SET_HL((REG_HL - 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C - 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
 }
 
@@ -1178,6 +1203,7 @@ void op_indr(CPU& cpu) {
     uint8_t old_b = REG_B;
     REG_B = (REG_B - 1) & 0xFF;
     SET_HL((REG_HL - 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C - 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
     if (REG_B != 0) {
         cpu._wait(5);
@@ -1194,6 +1220,7 @@ void op_outi(CPU& cpu) {
     REG_B = (REG_B - 1) & 0xFF;
     IO_WR(REG_BC, val);
     SET_HL((REG_HL + 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C + 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
 }
 
@@ -1205,6 +1232,7 @@ void op_otir(CPU& cpu) {
     REG_B = (REG_B - 1) & 0xFF;
     IO_WR(REG_BC, val);
     SET_HL((REG_HL + 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C + 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
     if (REG_B != 0) {
         cpu._wait(5);
@@ -1221,6 +1249,7 @@ void op_outd(CPU& cpu) {
     REG_B = (REG_B - 1) & 0xFF;
     IO_WR(REG_BC, val);
     SET_HL((REG_HL - 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C - 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
 }
 
@@ -1232,6 +1261,7 @@ void op_otdr(CPU& cpu) {
     REG_B = (REG_B - 1) & 0xFF;
     IO_WR(REG_BC, val);
     SET_HL((REG_HL - 1) & 0xFFFF);
+    cpu.regs.MEMPTR = ((REG_B + 1) << 8) | ((REG_C - 1) & 0xFF);
     _in_out_flags(cpu, val, old_b, REG_B);
     if (REG_B != 0) {
         cpu._wait(5);
@@ -1276,6 +1306,7 @@ void op_ld_rr_nn_ind(CPU& cpu) {
     uint8_t lo_pc = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi_pc = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = lo_pc | (hi_pc << 8);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     uint8_t lo = MEM_RD(addr);
     uint8_t hi = MEM_RD((addr + 1) & 0xFFFF);
     cpu.regs.set_reg16(pair, (uint16_t)(lo | (hi << 8)));
@@ -1291,6 +1322,7 @@ void op_ld_nn_rr(CPU& cpu) {
     uint8_t lo_pc = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi_pc = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = lo_pc | (hi_pc << 8);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     uint16_t val = cpu.regs.get_reg16(pair);
     MEM_WR(addr, val & 0xFF);
     MEM_WR((addr + 1) & 0xFFFF, val >> 8);
@@ -1307,6 +1339,7 @@ void op_neg(CPU& cpu) {
     if ((a & 0x0F) != 0) REG_F |= FLAG_H;
     if (result == 0x80) REG_F |= FLAG_PV;
     if (result & 0x80) REG_F |= FLAG_S;
+    REG_F |= (result & (FLAG_F3 | FLAG_F5));
 }
 
 void op_reti(CPU& cpu) {
@@ -1315,7 +1348,8 @@ void op_reti(CPU& cpu) {
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     cpu.regs.SP = (sp + 2) & 0xFFFF;
-    cpu.regs.PC = (uint16_t)(lo | (hi << 8));
+    cpu.regs.MEMPTR = (uint16_t)(lo | (hi << 8));
+    cpu.regs.PC = cpu.regs.MEMPTR;
     cpu._pc_modified = true;
     cpu.regs.IFF1 = cpu.regs.IFF2;
 }
@@ -1326,7 +1360,8 @@ void op_retn(CPU& cpu) {
     uint8_t lo = MEM_RD(sp);
     uint8_t hi = MEM_RD((sp + 1) & 0xFFFF);
     cpu.regs.SP = (sp + 2) & 0xFFFF;
-    cpu.regs.PC = (uint16_t)(lo | (hi << 8));
+    cpu.regs.MEMPTR = (uint16_t)(lo | (hi << 8));
+    cpu.regs.PC = cpu.regs.MEMPTR;
     cpu._pc_modified = true;
     cpu.regs.IFF1 = cpu.regs.IFF2;
 }
@@ -1342,6 +1377,7 @@ void op_in_r_c(CPU& cpu) {
     uint8_t opcode = cpu._bus_fetch(cpu.regs.PC++);
     int reg = (opcode >> 3) & 7;
     uint8_t val = IO_RD(REG_BC);
+    cpu.regs.MEMPTR = (REG_BC + 1) & 0xFFFF;
     if (reg != 6) {
         switch (reg) {
             case 0: REG_B = val; break;
@@ -1372,6 +1408,7 @@ void op_out_c_r(CPU& cpu) {
         case 7: val = REG_A; break;
         default: val = 0; break;
     }
+    cpu.regs.MEMPTR = (REG_BC + 1) & 0xFFFF;
     IO_WR(REG_BC, val);
 }
 
@@ -1454,6 +1491,7 @@ void op_dd_fd_ld_ix_nn(CPU& cpu) {
     uint8_t lo = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi = cpu._bus_read(cpu.regs.PC++);
     uint16_t val = lo | (hi << 8);
+    cpu.regs.MEMPTR = (val + 1) & 0xFFFF;
     if (cpu._is_iy) cpu.regs.IY = val;
     else cpu.regs.IX = val;
 }
@@ -1464,6 +1502,7 @@ void op_dd_fd_ld_nn_ix(CPU& cpu) {
     uint8_t lo_pc = cpu._bus_read(cpu.regs.PC++);
     uint8_t hi_pc = cpu._bus_read(cpu.regs.PC++);
     uint16_t addr = lo_pc | (hi_pc << 8);
+    cpu.regs.MEMPTR = (addr + 1) & 0xFFFF;
     uint16_t val = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
     MEM_WR(addr, val & 0xFF);
     MEM_WR((addr + 1) & 0xFFFF, val >> 8);
@@ -1510,6 +1549,7 @@ void op_dd_fd_push_ix(CPU& cpu) {
     cpu._bus_fetch(cpu.regs.PC++);
     cpu._wait(1);
     uint16_t ix = cpu._is_iy ? cpu.regs.IY : cpu.regs.IX;
+    cpu.regs.MEMPTR = ix;
     cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
     MEM_WR(cpu.regs.SP, ix >> 8);
     cpu.regs.SP = (cpu.regs.SP - 1) & 0xFFFF;
@@ -1518,8 +1558,10 @@ void op_dd_fd_push_ix(CPU& cpu) {
 
 void op_dd_fd_pop_ix(CPU& cpu) {
     cpu._bus_fetch(cpu.regs.PC++);
-    uint16_t ix = MEM_RD(cpu.regs.SP);
-    cpu.regs.SP = (cpu.regs.SP + 1) & 0xFFFF;
+    uint16_t sp = cpu.regs.SP;
+    cpu.regs.MEMPTR = (sp + 1) & 0xFFFF;
+    uint16_t ix = MEM_RD(sp);
+    cpu.regs.SP = (sp + 1) & 0xFFFF;
     ix |= (uint16_t)MEM_RD(cpu.regs.SP) << 8;
     cpu.regs.SP = (cpu.regs.SP + 1) & 0xFFFF;
     if (cpu._is_iy) cpu.regs.IY = ix;
