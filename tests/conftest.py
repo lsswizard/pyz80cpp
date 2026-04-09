@@ -76,7 +76,8 @@ def _add_flags(a, b):
         f |= FLAG_Z
     if r & 0x80:
         f |= FLAG_S
-    if bin(r).count("1") % 2 == 0:
+    # PV = signed overflow: same-sign operands produce different-sign result
+    if (r ^ a) & (r ^ b) & 0x80:
         f |= FLAG_PV
     return f
 
@@ -94,7 +95,8 @@ def _sub_flags(a, b):
         f |= FLAG_Z
     if r & 0x80:
         f |= FLAG_S
-    if bin(r).count("1") % 2 == 0:
+    # PV = signed overflow (two's complement overflow)
+    if (a ^ b) & (a ^ r) & 0x80:
         f |= FLAG_PV
     return f
 

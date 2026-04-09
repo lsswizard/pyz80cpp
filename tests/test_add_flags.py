@@ -2,7 +2,18 @@
 """ADD A,n and ADC A,n flag verification."""
 
 import pytest
-from conftest import write_program, _add_flags, flag_set, flag_clear, FLAG_S, FLAG_Z, FLAG_H, FLAG_PV, FLAG_C, FLAG_N
+from conftest import (
+    write_program,
+    _add_flags,
+    flag_set,
+    flag_clear,
+    FLAG_S,
+    FLAG_Z,
+    FLAG_H,
+    FLAG_PV,
+    FLAG_C,
+    FLAG_N,
+)
 
 
 class TestAddFlags:
@@ -58,7 +69,7 @@ class TestAddFlags:
         write_program(cpu, [0xCE, 0x00])
         cpu.step()
         assert cpu.regs.A == 0x80
-        assert flag_clear(cpu, FLAG_PV)
+        assert flag_set(cpu, FLAG_PV)
         assert flag_set(cpu, FLAG_S)
 
     @pytest.mark.parametrize(
@@ -95,4 +106,4 @@ class TestAddFlags:
         write_program(cpu, [0x87])
         cpu.step()
         assert cpu.regs.A == 0x80
-        assert flag_clear(cpu, FLAG_PV)
+        assert flag_set(cpu, FLAG_PV)

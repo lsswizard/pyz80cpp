@@ -2,12 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] — 2026-04-09
+
+### Changed
+
+- **Project layout**: Completely restructured from flat Python+CPP to proper C++ library layout
+- **Build system**: Rewritten CMakeLists.txt with modern CMake, proper include/source separation
+- **Source organization**: Modular handler files (`handlers/alu.cpp`, `handlers/block.cpp`, etc.)
+- **Headers**: Moved to `include/z80/` with clean public API headers
+- **Python bindings**: Now optional via `-DENABLE_PYBIND11` flag (pybind11)
+
+### Added
+
+- `Z80CoreConfig.cmake.in` for `find_package()` support
+- Modular handler architecture with separate compilation units
+
+### Removed
+
+- `core/` Python module directory
+- `cpp/core/` flat C++ source files
+- Raw CPython API bindings (replaced with optional pybind11)
+
+### Fixed
+
+- **Critical**: Fixed Q-flag tracking order - save and clear Q BEFORE instruction executes (matches PyZ80 behavior)
+- **Critical**: Fixed PV clearing on interrupt - now only cleared AFTER interrupt mode is determined (was incorrectly clearing for ALL interrupt paths)
+- **Critical**: Added UNRESOLVED_PREFIX flag handling - prevents interrupt during DD/FD prefix sequences (matches PyZ80 behavior)
+
+### Removed
+
+- Removed bogus PV clearing that happened unconditionally before checking interrupt mode
+
 ## [2.2.0] — 2026-04-05
 
 ### Added
 
 - Test suite reorganized into 28 small test files for better maintainability
 - New tests: DD/FD prefix fallthrough, Q factor, CCF H flag, comprehensive DAA, IX/IY edge cases
+
+### Fixed
+
+- **Critical**: Fixed use-after-free in `set_memory_ptr` by properly managing Py_buffer lifecycle
+- **Critical**: Added return value checking for all PyLong_AsLong and PyObject_IsTrue calls in register/flag setters
+- **Serious**: Fixed reference leak in bus_io_write output callback path
+- **Serious**: Ensure Python exceptions in bus_write/bus_io_write are cleared rather than swallowed
+- **Serious**: Invalidate decoder cache in set_memory_ptr when memory pointer changes
+- **Logic**: get_addr_mark now raises RuntimeError instead of returning 0 when py_bus is null
+- **Logic**: Check return value of PyModule_AddObject to prevent reference leaks
+- **Quality**: Renamed CPU_REG8_GETSET macro to CPU_REG_GETSET (more accurate naming)
 
 ### Changed
 

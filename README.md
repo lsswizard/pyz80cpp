@@ -1,43 +1,39 @@
-# PyZ80 — Machine-Agnostic Cycle-Exact Z80 CPU Core
+# Z80Core — Machine-Agnostic Cycle-Exact Z80 CPU Core
 
-A high-performance Z80 CPU emulator implemented in C++ with raw CPython bindings. The core is **100% machine-independent** — all machine-specific logic (memory mapping, I/O, contention, interrupts) lives in Python.
+A high-performance Z80 CPU emulator implemented in C++ as a reusable library. The core is **100% machine-independent** — all machine-specific logic (memory mapping, I/O, contention, interrupts) lives in the host application.
 
 ## Features
 
 - **Cycle-exact execution** — every instruction matches Zilog T-state specifications
 - **Machine-agnostic design** — zero machine-specific code in the C++ core
-- **Flat register API** — `cpu.A`, `cpu.PC`, `cpu.HL`, `cpu.IFF1`, etc. directly on the CPU object
-- **I/O callbacks** — `set_on_input_callback()` / `set_on_output_callback()` for machine I/O
-- **RETI callback** — interrupt daisy chaining support (Z80PIO, Z80CTC)
-- **Interrupt vector callback** — machine provides vector on demand during INT acknowledge
-- **Memory marking** — `mark_addrs()` / `unmark_addrs()` for breakpoints and self-modifying code detection
-- **Contention support** — `add_cycles()` for ULA wait states and memory contention
-- **Interrupt control** — machine-triggered `trigger_interrupt(data)` and `trigger_nmi()`
-- **Full instruction set** — all 256 base opcodes + CB, ED, DD, FD prefixes + DDCB/FDCB
-- **Undocumented behavior** — Q factor, F3/F5 flags, DD/FD prefix fallthrough
-- **No external dependencies** — raw CPython API, no nanobind or other binding libraries
+- **Modular handler architecture** — handlers organized by category (ALU, block, I/O, jump, load)
+- **Flat register API** — `cpu.A`, `cpu.PC`, `cpu.HL`, `cpu.IFF1`, etc.
+- **Clean header/include separation** — proper C++ library layout
+- **Optional Python bindings** — pybind11 bindings available via `-DENABLE_PYBIND11`
+- **CMake build system** — modern CMake with find_package support
+- **No external dependencies** — standalone C++ core
 
 ## Quick Start
 
-```python
-from core import Z80CPU
+```cpp
+#include <z80/z80.h>
 
-cpu = Z80CPU()
+Z80CPU cpu;
 
-# Write a program: LD A, 0x42 / HALT
-cpu.write_byte(0, 0x3E)
-cpu.write_byte(1, 0x42)
-cpu.write_byte(2, 0x76)
+// Write a program: LD A, 0x42 / HALT
+cpu.writeByte(0, 0x3E);
+cpu.writeByte(1, 0x42);
+cpu.writeByte(2, 0x76);
 
-cpu.reset()
-cpu.PC = 0
+cpu.reset();
+cpu.setPC(0);
 
-# Execute
-cpu.step()      # LD A, 0x42 — returns 7 T-states
-print(hex(cpu.A))  # 0x42
+// Execute
+cpu.step();      // LD A, 0x42 — returns 7 T-states
+cpu.getA();      // 0x42
 
-cpu.step()      # HALT — returns 4 T-states
-print(cpu.halted)  # True
+cpu.step();      // HALT — returns 4 T-states
+cpu.isHalted(); // true
 ```
 
 ## Building
@@ -46,54 +42,64 @@ print(cpu.halted)  # True
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
-cp _pyz80.so ../core/_pyz80.cpython-314-x86_64-linux-gnu.so
 ```
 
-**Requirements:** CMake 3.20+, C++20 compiler, Python 3.12+
+**Requirements:** CMake 3.16+, C++17 compiler
 
 ## Running Tests
 
 ```bash
-python3 -m pytest tests/ -v
+cmake .. -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+make -j$(nproc)
+ctest --output-on-failure
 ```
 
-762 tests covering loads, ALU, flags, jumps, calls, stack, I/O, block ops, indexed, interrupts, timing, undocumented flags, DD/FD fallthrough, DDCB/FDCB, DAA, Q factor, edge cases, and integration.
+Or with GTest directly:
+
+```bash
+./z80_tests
+```
 
 ## Machine Integration
 
-The CPU core has **no knowledge** of any specific machine. To emulate a system (ZX Spectrum, CPC, MSX, etc.), implement machine logic in Python:
+The CPU core has **no knowledge** of any specific machine. To emulate a system (ZX Spectrum, CPC, MSX, etc.), implement machine logic by subclassing `Z80Bus`:
 
-```python
-from core import Z80CPU
+```cpp
+#include <z80/z80.h>
+#include <z80/bus.h>
 
-class MyMachine:
-    def __init__(self):
-        self.cpu = Z80CPU()
-        self.cpu.set_on_input_callback(self.io_read)
-        self.cpu.set_on_output_callback(self.io_write)
-        self.cpu.set_on_reti_callback(self.on_reti)  # Daisy chain support
-        self.cpu.set_on_get_int_vector_callback(self.get_int_vector)
+class MyMachine : public z80::Z80Bus {
+public:
+    uint8_t read(uint16_t addr) override {
+        return memory[addr];
+    }
 
-    def io_read(self, port):
-        return 0xFF
+    void write(uint16_t addr, uint8_t value) override {
+        memory[addr] = value;
+    }
 
-    def io_write(self, port, value):
-        pass
+    uint8_t portRead(uint16_t port) override {
+        return 0xFF;  // Keyboard, PSG, etc.
+    }
 
-    def on_reti(self):
-        # Release interrupt daisy chain (Z80PIO/Z80CTC)
-        pass
+    void portWrite(uint16_t port, uint8_t value) override {
+        // Handle I/O devices
+    }
 
-    def get_int_vector(self):
-        # Return interrupt vector for IM2
-        return 0xFF
+    void onReti() override {
+        // Release interrupt daisy chain (Z80PIO/Z80CTC)
+    }
 
-    def run_frame(self):
-        self.cpu.trigger_interrupt(0xFF)
-        self.cpu.run_frame(69888)  # Spectrum: 69888 T-states per frame
+    uint8_t getInterruptVector() override {
+        return 0xFF;  // IM2 vector
+    }
+
+private:
+    uint8_t memory[65536];
+};
 ```
 
-See `TECHNICAL.md` for the complete API reference and integration guide.
+See `include/z80/*.h` for the complete API reference.
 
 ## License
 

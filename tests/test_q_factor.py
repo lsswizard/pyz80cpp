@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Q factor tracking tests."""
+
 import pytest
 from conftest import write_program, flag_set, flag_clear
 
 FLAG_F3 = 0x08
 FLAG_F5 = 0x20
+
 
 class TestQFactorSCF:
     def test_scf_after_flag_modifying_copies_a(self, cpu):
@@ -49,6 +51,7 @@ class TestQFactorSCF:
         assert not (cpu.regs.F & FLAG_F5)
         assert not (cpu.regs.F & FLAG_F3)
 
+
 class TestQFactorCCF:
     def test_ccf_after_flag_modifying_copies_a(self, cpu):
         cpu.regs.A = 0x30
@@ -92,12 +95,13 @@ class TestQFactorCCF:
         assert bool(cpu.regs.F & FLAG_F5) == expected_f5
         assert bool(cpu.regs.F & FLAG_F3) == expected_f3
 
+
 class TestQFactorSequence:
     def test_scf_scf_second_copies_a(self, cpu):
-        cpu.regs.A = 0x28
+        cpu.regs.A = 0x28  # 00101000: bit3=1, bit5=1
         write_program(cpu, [0x37, 0x37])
-        cpu.step()
-        cpu.step()
+        cpu.step()  # SCF: Q=0 -> F3=(0|0x28)&0x28=0x28, F5=(0|0x28)&0x28=0x28, F=0x29, Q=0x29
+        cpu.step()  # SCF: Q!=0 -> F3=A.3=1, F5=A.5=1, F=0x29
         assert cpu.regs.F & FLAG_F5
         assert cpu.regs.F & FLAG_F3
         assert cpu.regs.F & 0x01
