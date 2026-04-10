@@ -257,6 +257,173 @@ void handle_srl_r(Z80& cpu) {
 }
 
 // ------------------------------------------------
+// SLL r - Shift Logical Left (Undocumented) - 8 T-states
+// Like SLA but shifts in 0 (not carry)
+// ------------------------------------------------
+void handle_sll_r(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    int reg = opcode & 7;
+    uint8_t val = cpu.read_reg8(reg);
+    
+    uint8_t carry = (val >> 7) & 1;
+    val = (val << 1);
+    
+    cpu.write_reg8(reg, val);
+    cpu.regs.F = FlagTables::SZP_TABLE[val] | carry;
+}
+
+// ------------------------------------------------
+// BIT b, r - Test bit - 8 T-states
+// ------------------------------------------------
+void handle_cb_bit(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    int bit = (opcode >> 3) & 7;
+    int reg = opcode & 7;
+    uint8_t val = cpu.read_reg8(reg);
+    
+    uint8_t result = val & (1 << bit);
+    cpu.regs.F = (cpu.regs.F & Flags::C) | Flags::H | 
+                 (result ? 0 : Flags::Z) |
+                 (result ? Flags::S : 0);
+    
+    // For bits 3 and 5, copy bit 3 of original value to F5
+    if (bit == 3 || bit == 5) {
+        cpu.regs.F = (cpu.regs.F & ~Flags::F5) | (val & Flags::F5);
+    }
+}
+
+// ------------------------------------------------
+// RES b, r - Reset bit - 8 T-states
+// ------------------------------------------------
+void handle_cb_res(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    int bit = (opcode >> 3) & 7;
+    int reg = opcode & 7;
+    uint8_t val = cpu.read_reg8(reg);
+    
+    val = val & ~(1 << bit);
+    cpu.write_reg8(reg, val);
+}
+
+// ------------------------------------------------
+// SET b, r - Set bit - 8 T-states
+// ------------------------------------------------
+void handle_cb_set(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    int bit = (opcode >> 3) & 7;
+    int reg = opcode & 7;
+    uint8_t val = cpu.read_reg8(reg);
+    
+    val = val | (1 << bit);
+    cpu.write_reg8(reg, val);
+}
+
+// ============================================================
+// DDCB/FDCB Prefix Handlers (indexed bit operations)
+// ============================================================
+
+// ------------------------------------------------
+// DDCB/FDCB rotate/shift - 23 T-states
+// Note: DDCB/FDCB with index+d doesn't support SLL, only index+r
+// ------------------------------------------------
+void handle_ddcb_fdcb_rot(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    uint8_t base = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    int8_t offset = (int8_t)cpu.fetch();
+    uint16_t addr = (base + offset) & 0xFFFF;
+    
+    uint8_t val = cpu.read(addr);
+    uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
+    uint8_t result;
+    uint8_t new_carry;
+    
+    switch ((opcode >> 3) & 7) {
+        case 0:  // RLC
+            new_carry = (val >> 7) & 1;
+            result = (val << 1) | new_carry;
+            break;
+        case 1:  // RRC
+            new_carry = val & 1;
+            result = (val >> 1) | (new_carry << 7);
+            break;
+        case 2:  // RL
+            new_carry = (val >> 7) & 1;
+            result = (val << 1) | carry;
+            break;
+        case 3:  // RR
+            new_carry = val & 1;
+            result = (val >> 1) | (carry << 7);
+            break;
+        case 4:  // SLA
+            new_carry = (val >> 7) & 1;
+            result = val << 1;
+            break;
+        case 5:  // SRA
+            new_carry = val & 1;
+            result = (val >> 1) | (val & 0x80);
+            break;
+        case 6:  // SRL
+            new_carry = val & 1;
+            result = val >> 1;
+            break;
+        default:
+            result = val;
+            new_carry = 0;
+    }
+    
+    cpu.write(addr, result);
+    cpu.regs.F = FlagTables::SZP_TABLE[result] | new_carry;
+}
+
+// ------------------------------------------------
+// DDCB/FDCB BIT - 20 T-states
+// ------------------------------------------------
+void handle_ddcb_fdcb_bit(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    uint8_t base = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    int8_t offset = (int8_t)cpu.fetch();
+    uint16_t addr = (base + offset) & 0xFFFF;
+    
+    int bit = (opcode >> 3) & 7;
+    uint8_t val = cpu.read(addr);
+    uint8_t result = val & (1 << bit);
+    
+    cpu.regs.F = (cpu.regs.F & Flags::C) | Flags::H | 
+                 (result ? 0 : Flags::Z) |
+                 (result ? Flags::S : 0);
+}
+
+// ------------------------------------------------
+// DDCB/FDCB RES - 23 T-states
+// ------------------------------------------------
+void handle_ddcb_fdcb_res(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    uint8_t base = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    int8_t offset = (int8_t)cpu.fetch();
+    uint16_t addr = (base + offset) & 0xFFFF;
+    
+    int bit = (opcode >> 3) & 7;
+    uint8_t val = cpu.read(addr);
+    val = val & ~(1 << bit);
+    cpu.write(addr, val);
+}
+
+// ------------------------------------------------
+// DDCB/FDCB SET - 23 T-states
+// ------------------------------------------------
+void handle_ddcb_fdcb_set(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    uint8_t base = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    int8_t offset = (int8_t)cpu.fetch();
+    uint16_t addr = (base + offset) & 0xFFFF;
+    
+    int bit = (opcode >> 3) & 7;
+    uint8_t val = cpu.read(addr);
+    val = val | (1 << bit);
+    cpu.write(addr, val);
+}
+
+// ------------------------------------------------
 // RLA - 4 T-states
 // ------------------------------------------------
 void handle_rla(Z80& cpu) {

@@ -423,6 +423,16 @@ void OpcodeTable::init() {
     cb_table[0x2E] = {handle_sra_r, 8, 2, true};
     cb_table[0x2F] = {handle_sra_r, 8, 2, true};
 
+    // SLL r (0x30-0x37) - Undocumented
+    cb_table[0x30] = {handle_sll_r, 8, 2, true};
+    cb_table[0x31] = {handle_sll_r, 8, 2, true};
+    cb_table[0x32] = {handle_sll_r, 8, 2, true};
+    cb_table[0x33] = {handle_sll_r, 8, 2, true};
+    cb_table[0x34] = {handle_sll_r, 8, 2, true};
+    cb_table[0x35] = {handle_sll_r, 8, 2, true};
+    cb_table[0x36] = {handle_sll_r, 8, 2, true};
+    cb_table[0x37] = {handle_sll_r, 8, 2, true};
+
     // SRL r (0x38-0x3F)
     cb_table[0x38] = {handle_srl_r, 8, 2, true};
     cb_table[0x39] = {handle_srl_r, 8, 2, true};
@@ -432,6 +442,21 @@ void OpcodeTable::init() {
     cb_table[0x3D] = {handle_srl_r, 8, 2, true};
     cb_table[0x3E] = {handle_srl_r, 8, 2, true};
     cb_table[0x3F] = {handle_srl_r, 8, 2, true};
+
+    // BIT b, r (0x40-0x7F)
+    for (int i = 0; i < 64; i++) {
+        cb_table[0x40 + i] = {handle_cb_bit, 8, 2, true};
+    }
+
+    // RES b, r (0x80-0xAF)
+    for (int i = 0; i < 48; i++) {
+        cb_table[0x80 + i] = {handle_cb_res, 8, 2, true};
+    }
+
+    // SET b, r (0xB0-0xFF)
+    for (int i = 0; i < 80; i++) {
+        cb_table[0xB0 + i] = {handle_cb_set, 8, 2, true};
+    }
 
     // =====================
     // ED prefix table
@@ -580,12 +605,42 @@ void OpcodeTable::init() {
     dd_table[0xE9] = {handle_dd_fd_jp_ix, 8, 2, false};  // JP (IX)
     fd_table[0xE9] = {handle_dd_fd_jp_ix, 8, 2, false};  // JP (IY)
 
+    // Indexed operations - LD r, (IX+d) and LD (IX+d), r
+    // 0x46 = LD (IX+d), A is a common one
+    dd_table[0x46] = {handle_dd_fd_ld_ixd_n, 19, 3, false};  // LD (IX+d), n
+    fd_table[0x46] = {handle_dd_fd_ld_ixd_n, 19, 3, false};  // LD (IY+d), n
+    
+    dd_table[0x4E] = {handle_dd_fd_ld_r_ixd, 19, 3, false};  // LD r, (IX+d)
+    fd_table[0x4E] = {handle_dd_fd_ld_r_ixd, 19, 3, false};  // LD r, (IY+d)
+    
+    // INC/DEC (IX+d)
+    dd_table[0x34] = {handle_dd_fd_inc_ixd, 23, 3, true};  // INC (IX+d)
+    fd_table[0x34] = {handle_dd_fd_inc_ixd, 23, 3, true};
+    dd_table[0x35] = {handle_dd_fd_dec_ixd, 23, 3, true};  // DEC (IX+d)
+    fd_table[0x35] = {handle_dd_fd_dec_ixd, 23, 3, true};
+
     // =====================
     // DDCB/FDCB prefix tables
     // =====================
-    for (int i = 0; i < 256; i++) {
+    // 0x00-0x3F: rotate/shift
+    // 0x40-0x7F: BIT
+    // 0x80-0xAF: RES
+    // 0xB0-0xFF: SET
+    for (int i = 0; i < 64; i++) {
         ddcb_table[i] = {handle_ddcb_fdcb_rot, 23, 4, true};
         fdcb_table[i] = {handle_ddcb_fdcb_rot, 23, 4, true};
+    }
+    for (int i = 0; i < 64; i++) {
+        ddcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 20, 4, true};
+        fdcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 20, 4, true};
+    }
+    for (int i = 0; i < 48; i++) {
+        ddcb_table[0x80 + i] = {handle_ddcb_fdcb_res, 23, 4, true};
+        fdcb_table[0x80 + i] = {handle_ddcb_fdcb_res, 23, 4, true};
+    }
+    for (int i = 0; i < 80; i++) {
+        ddcb_table[0xB0 + i] = {handle_ddcb_fdcb_set, 23, 4, true};
+        fdcb_table[0xB0 + i] = {handle_ddcb_fdcb_set, 23, 4, true};
     }
 }
 

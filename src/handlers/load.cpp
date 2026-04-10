@@ -229,26 +229,55 @@ void handle_exx(Z80& cpu) {
 void handle_ex_sp_hl(Z80& cpu) {
     uint16_t sp = cpu.regs.SP;
     
-    // Read from stack (HL is not modified yet)
-    // The timing is critical: we read the old value first
-    // then write HL to stack
-    
-    // First read from stack (the value that will go to HL)
     uint8_t lo = cpu.read(sp);
     uint8_t hi = cpu.read(sp + 1);
     uint16_t temp = (hi << 8) | lo;
     
-    // Now write HL to stack
-    // Write high byte first (at SP+1)
     cpu.write(sp + 1, (cpu.regs.HL() >> 8) & 0xFF);
-    // Write low byte (at SP)
     cpu.write(sp, cpu.regs.HL() & 0xFF);
     
-    // Update HL with the value read from stack
     cpu.regs.set_HL(temp);
-    
-    // MEMPTR is set to the address of the low byte read
     cpu.regs.MEMPTR = sp;
+}
+
+// ------------------------------------------------
+// LD (nn), rr - 20 T-states (ED 0x43, 0x53, 0x63, 0x73)
+// ------------------------------------------------
+void handle_ld_nn_rr(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    uint16_t addr = cpu.fetch();
+    addr |= (cpu.fetch() << 8);
+    
+    uint16_t val;
+    switch ((opcode >> 4) & 3) {
+        case 0: val = cpu.regs.BC(); break;
+        case 1: val = cpu.regs.DE(); break;
+        case 2: val = cpu.regs.HL(); break;
+        case 3: val = cpu.regs.SP; break;
+    }
+    cpu.write(addr++, val & 0xFF);
+    cpu.write(addr, (val >> 8) & 0xFF);
+    cpu.regs.MEMPTR = addr + 1;
+}
+
+// ------------------------------------------------
+// LD rr, (nn) - 20 T-states (ED 0x4B, 0x5B, 0x6B, 0x7B)
+// ------------------------------------------------
+void handle_ld_rr_nn_ind(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    uint16_t addr = cpu.fetch();
+    addr |= (cpu.fetch() << 8);
+    
+    uint16_t val = cpu.read(addr++);
+    val |= (cpu.read(addr) << 8);
+    
+    switch ((opcode >> 4) & 3) {
+        case 0: cpu.regs.set_BC(val); break;
+        case 1: cpu.regs.set_DE(val); break;
+        case 2: cpu.regs.set_HL(val); break;
+        case 3: cpu.regs.SP = val; break;
+    }
+    cpu.regs.MEMPTR = addr;
 }
 
 } // namespace z80

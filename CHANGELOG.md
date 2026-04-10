@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.0] — 2026-04-10
+
+### Added
+
+- **SLL instruction** - Shift Logical Left (undocumented CB 0x30-0x37)
+- **BIT b,r instruction** - Test bit (CB 0x40-0x7F)
+- **RES b,r instruction** - Reset bit (CB 0x80-0xAF)
+- **SET b,r instruction** - Set bit (CB 0xB0-0xFF)
+- **ADC HL,rr instruction** - Add with carry 16-bit (ED 0x4A/5A/6A/7A)
+- **SBC HL,rr instruction** - Subtract with carry 16-bit (ED 0x42/52/62/72)
+- **RLD/RLR instructions** - Rotate Left/Right Digit (ED 0x67/0x6F)
+- **NEG instruction** - Negate accumulator (ED 0x44-0x7C)
+- **RETN instruction** - Return from NMI (ED 0x45/55/65/75)
+- **RETI instruction** - Return from interrupt (ED 0x4D)
+- **IM 0/1/2 instructions** - Set interrupt mode (ED 0x46/56/5E)
+- **LD A,I / LD A,R instructions** - Load A from I/R registers (ED 0x57/5F/58/78)
+- **LD I,A / LD R,A instructions** - Load I/R from A (ED 0x47/4F)
+- **LD (nn),rr instructions** - 16-bit loads to memory (ED 0x43/53/63/73)
+- **LD rr,(nn) instructions** - 16-bit loads from memory (ED 0x4B/5B/6B/7B)
+- **DDCB/FDCB handlers** - Proper indexed BIT/RES/SET/rotate operations
+- **DD/FD indexed arithmetic** - SUB/AND/OR/XOR/CP with (IX+d) addressing
+
+### Fixed
+
+- **Critical**: DDCB/FDCB displacement byte was being read twice - fixed
+- **Critical**: DD/FD ADD IX,rr was writing result to HL instead of IX/IY - fixed
+- **handle_ld_nn_rr** - Was used but not implemented - added
+- **handle_ld_rr_nn_ind** - Was used but not implemented - added
+- **DD/FD prefix fallthrough** - Was not falling through to main table - fixed
+- **handlers.h** - Removed 38 duplicate handler declarations (reduced from 212 to 174 lines)
+
+### Code Cleanup
+
+- Consolidated all handler declarations in handlers.h (134 unique handlers)
+- Proper header/implementation matching
+
 ## [2.3.0] — 2026-04-09
 
 ### Changed

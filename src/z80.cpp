@@ -127,21 +127,25 @@ int Z80::execute_instruction() {
         prefix_ix = true;
         opcode = fetch();
         if (opcode == 0xCB) {
-            // DDCB prefix
-            uint8_t d = fetch();  // Displacement
-            (void)d;  // Unused for now
-            opcode = fetch();
+            opcode = fetch();  // Displacement is fetched by the handler
             const Instruction& inst = OpcodeTable::get_ddcb(opcode);
             if (inst.exec) {
                 inst.exec(*this);
                 cycles += inst.base_cycles - 4;
             }
         } else {
-            // DD regular opcode
+            // DD regular opcode - check DD table first, fall through to main
             const Instruction& inst = OpcodeTable::get_dd(opcode);
             if (inst.exec) {
                 inst.exec(*this);
                 cycles += inst.base_cycles - 4;
+            } else {
+                // Fall through to main table handler
+                const Instruction& main_inst = OpcodeTable::get_main(opcode);
+                if (main_inst.exec) {
+                    main_inst.exec(*this);
+                    cycles += main_inst.base_cycles - 4;
+                }
             }
         }
         prefix_ix = false;
@@ -150,21 +154,25 @@ int Z80::execute_instruction() {
         prefix_ix = false;
         opcode = fetch();
         if (opcode == 0xCB) {
-            // FDCB prefix
-            uint8_t d = fetch();  // Displacement
-            (void)d;
-            opcode = fetch();
+            opcode = fetch();  // Displacement is fetched by the handler
             const Instruction& inst = OpcodeTable::get_fdcb(opcode);
             if (inst.exec) {
                 inst.exec(*this);
                 cycles += inst.base_cycles - 4;
             }
         } else {
-            // FD regular opcode
+            // FD regular opcode - check FD table first, fall through to main
             const Instruction& inst = OpcodeTable::get_fd(opcode);
             if (inst.exec) {
                 inst.exec(*this);
                 cycles += inst.base_cycles - 4;
+            } else {
+                // Fall through to main table handler
+                const Instruction& main_inst = OpcodeTable::get_main(opcode);
+                if (main_inst.exec) {
+                    main_inst.exec(*this);
+                    cycles += main_inst.base_cycles - 4;
+                }
             }
         }
         prefix_ix = false;
