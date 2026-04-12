@@ -12,6 +12,7 @@ A high-performance Z80 CPU emulator implemented in C++ as a reusable library. Th
 - **Optional Python bindings** — pybind11 bindings available via `-DENABLE_PYBIND11`
 - **CMake build system** — modern CMake with find_package support
 - **No external dependencies** — standalone C++ core
+- **Latest v2.4.1** — Improved flag accuracy, timing, and MEMPTR handling (see CHANGELOG.md)
 
 ## Quick Start
 
