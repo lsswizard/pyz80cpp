@@ -3,188 +3,56 @@
 
 namespace z80 {
 
-// ============================================================
-// Block Transfer Instructions - CRITICAL TIMING
-// ============================================================
+    static inline void block_transfer(Z80& cpu, int dir) {
+        uint16_t hl = cpu.regs.HL();
+        uint16_t de = cpu.regs.DE();
+        uint8_t val = cpu.read(hl);
+        cpu.write(de, val);
+        cpu.wait(2);
+        cpu.regs.set_HL(hl + dir);
+        cpu.regs.set_DE(de + dir);
+        cpu.regs.set_BC(cpu.regs.BC() - 1);
 
-// ------------------------------------------------
-// LDI - Load and Increment
-// (HL) -> (DE), DE++, HL++, BC--
-// 16 T-states
-// ------------------------------------------------
-void handle_ldi(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    cpu.write(cpu.regs.DE(), val);
-    
-    cpu.regs.set_DE(cpu.regs.DE() + 1);
-    cpu.regs.set_HL(cpu.regs.HL() + 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    // Flags: N=0, H=0, PV=1 if BC != 0
-    cpu.regs.F &= 0xC5;  // Clear N, H, set based on BC
-    cpu.regs.F |= (cpu.regs.BC() != 0) ? Flags::PV : 0;
-    cpu.regs.F |= (cpu.regs.A + val) & 0x10;  // H from addition
-}
-
-// ------------------------------------------------
-// LDIR - Load and Increment, Repeat
-// First iteration: 21 T-states
-// Subsequent: 16 T-states (until BC=0)
-// Total when complete: 21 + 16*(n-1) = 16n + 5
-// ------------------------------------------------
-void handle_ldir(Z80& cpu) {
-    // Similar to LDI but repeats until BC=0
-    uint8_t val = cpu.read(cpu.regs.HL());
-    cpu.write(cpu.regs.DE(), val);
-    
-    cpu.regs.set_DE(cpu.regs.DE() + 1);
-    cpu.regs.set_HL(cpu.regs.HL() + 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    // Flags same as LDI
-    cpu.regs.F &= 0xC5;
-    cpu.regs.F |= (cpu.regs.BC() != 0) ? Flags::PV : 0;
-    cpu.regs.F |= (cpu.regs.A + val) & 0x10;
-    
-    // If BC is not zero, repeat the instruction
-    // The CPU will naturally do this since PC wasn't incremented
-    // But we need to account for the additional cycles
-    if (cpu.regs.BC() != 0) {
-        // Additional 16 T-states for repeat
-        cpu.add_cycles(16);
+        uint8_t n = val + cpu.regs.A;
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::C)) | (cpu.regs.BC() != 0 ? Flags::PV : 0) | (n & Flags::F3) | ((n & 0x02) ? Flags::F5 : 0);
     }
-}
 
-// ------------------------------------------------
-// LDD - Load and Decrement
-// (HL) -> (DE), DE--, HL--, BC--
-// 16 T-states
-// ------------------------------------------------
-void handle_ldd(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    cpu.write(cpu.regs.DE(), val);
-    
-    cpu.regs.set_DE(cpu.regs.DE() - 1);
-    cpu.regs.set_HL(cpu.regs.HL() - 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    // Flags: similar to LDI
-    cpu.regs.F &= 0xC5;
-    cpu.regs.F |= (cpu.regs.BC() != 0) ? Flags::PV : 0;
-    cpu.regs.F |= (cpu.regs.A + val) & 0x10;
-}
+    static inline void block_compare(Z80& cpu, int dir) {
+        uint16_t hl = cpu.regs.HL();
+        uint8_t val = cpu.read(hl);
+        uint8_t res = cpu.regs.A - val;
+        cpu.wait(5);
+        cpu.regs.set_HL(hl + dir);
+        cpu.regs.set_BC(cpu.regs.BC() - 1);
 
-// ------------------------------------------------
-// LDDR - Load and Decrement, Repeat
-// First: 21 T-states, subsequent: 16 T-states
-// ------------------------------------------------
-void handle_lddr(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    cpu.write(cpu.regs.DE(), val);
-    
-    cpu.regs.set_DE(cpu.regs.DE() - 1);
-    cpu.regs.set_HL(cpu.regs.HL() - 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    cpu.regs.F &= 0xC5;
-    cpu.regs.F |= (cpu.regs.BC() != 0) ? Flags::PV : 0;
-    cpu.regs.F |= (cpu.regs.A + val) & 0x10;
-    
-    if (cpu.regs.BC() != 0) {
-        cpu.add_cycles(16);
+        uint8_t hf = ((cpu.regs.A & 0x0F) < (val & 0x0F)) ? Flags::H : 0;
+        uint8_t n = res - (hf ? 1 : 0);
+        cpu.regs.F = (res & Flags::S) | (res == 0 ? Flags::Z : 0) | hf | Flags::N |
+        (cpu.regs.BC() != 0 ? Flags::PV : 0) | (cpu.regs.F & Flags::C) |
+        (n & Flags::F3) | ((n & 0x02) ? Flags::F5 : 0);
+        cpu.regs.MEMPTR = (cpu.regs.MEMPTR + dir) & 0xFFFF;
     }
-}
 
-// ============================================================
-// Compare and Search Instructions
-// ============================================================
+    void handle_ldi(Z80& cpu)  { block_transfer(cpu, 1); }
+    void handle_ldd(Z80& cpu)  { block_transfer(cpu, -1); }
+    void handle_cpi(Z80& cpu)  { block_compare(cpu, 1); }
+    void handle_cpd(Z80& cpu)  { block_compare(cpu, -1); }
 
-// ------------------------------------------------
-// CPI - Compare and Increment
-// A - (HL), HL++, BC--
-// 16 T-states
-// ------------------------------------------------
-void handle_cpi(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    uint8_t result = cpu.regs.A - val;
-    
-    // Set flags
-    cpu.regs.F = (result & 0xA8) |  // S, Z, 5, 3
-                 ((result >> 8) & 0x01) |  // Carry
-                 ((cpu.regs.A ^ val ^ result) & Flags::H) |  // Half borrow
-                 Flags::N;  // Set N flag
-    
-    // P/V = 1 if BC != 0
-    cpu.regs.set_HL(cpu.regs.HL() + 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    if (cpu.regs.BC() != 0) {
-        cpu.regs.F |= Flags::PV;
+    void handle_ldir(Z80& cpu) {
+        handle_ldi(cpu);
+        if (cpu.regs.BC() != 0) { cpu.wait(5); cpu.regs.PC -= 2; cpu.regs.MEMPTR = cpu.regs.PC + 1; }
     }
-}
-
-// ------------------------------------------------
-// CPIR - Compare, Increment, Repeat
-// First: 21 T-states, then 16 T-states per iteration
-// ------------------------------------------------
-void handle_cpir(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    uint8_t result = cpu.regs.A - val;
-    
-    cpu.regs.F = (result & 0xA8) |
-                 ((result >> 8) & 0x01) |
-                 ((cpu.regs.A ^ val ^ result) & Flags::H) |
-                 Flags::N;
-    
-    cpu.regs.set_HL(cpu.regs.HL() + 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    // Repeat if not found and BC != 0
-    if ((result != 0) && (cpu.regs.BC() != 0)) {
-        cpu.add_cycles(16);
+    void handle_lddr(Z80& cpu) {
+        handle_ldd(cpu);
+        if (cpu.regs.BC() != 0) { cpu.wait(5); cpu.regs.PC -= 2; cpu.regs.MEMPTR = cpu.regs.PC + 1; }
     }
-}
-
-// ------------------------------------------------
-// CPD - Compare and Decrement
-// A - (HL), HL--, BC--
-// 16 T-states
-// ------------------------------------------------
-void handle_cpd(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    uint8_t result = cpu.regs.A - val;
-    
-    cpu.regs.F = (result & 0xA8) |
-                 ((result >> 8) & 0x01) |
-                 ((cpu.regs.A ^ val ^ result) & Flags::H) |
-                 Flags::N;
-    
-    cpu.regs.set_HL(cpu.regs.HL() - 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    if (cpu.regs.BC() != 0) {
-        cpu.regs.F |= Flags::PV;
+    void handle_cpir(Z80& cpu) {
+        handle_cpi(cpu);
+        if (!(cpu.regs.F & Flags::Z) && cpu.regs.BC() != 0) { cpu.wait(5); cpu.regs.PC -= 2; cpu.regs.MEMPTR = cpu.regs.PC + 1; }
     }
-}
-
-// ------------------------------------------------
-// CPDR - Compare, Decrement, Repeat
-// ------------------------------------------------
-void handle_cpdr(Z80& cpu) {
-    uint8_t val = cpu.read(cpu.regs.HL());
-    uint8_t result = cpu.regs.A - val;
-    
-    cpu.regs.F = (result & 0xA8) |
-                 ((result >> 8) & 0x01) |
-                 ((cpu.regs.A ^ val ^ result) & Flags::H) |
-                 Flags::N;
-    
-    cpu.regs.set_HL(cpu.regs.HL() - 1);
-    cpu.regs.set_BC(cpu.regs.BC() - 1);
-    
-    if ((result != 0) && (cpu.regs.BC() != 0)) {
-        cpu.add_cycles(16);
+    void handle_cpdr(Z80& cpu) {
+        handle_cpd(cpu);
+        if (!(cpu.regs.F & Flags::Z) && cpu.regs.BC() != 0) { cpu.wait(5); cpu.regs.PC -= 2; cpu.regs.MEMPTR = cpu.regs.PC + 1; }
     }
-}
 
 } // namespace z80

@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.1] — 2026-04-12
+
+### Fixed
+
+- **Critical**: Corrected flag calculations for undocumented F5/F3 flags in CP, BIT, and rotate instructions
+- **Critical**: Fixed timing/wait states for numerous instructions (ADD HL, rr, INC rr, PUSH rr, block transfers, DD/FD indexed ops)
+- **Critical**: Corrected MEMPTR updates for proper undocumented flag behavior
+- **Critical**: Fixed DDCB/FDCB base register type from uint8_t to uint16_t preventing IX/IY truncation
+- **Critical**: Corrected EI instruction one-instruction interrupt delay
+- **Critical**: Fixed NMI timing to 11 T-states (5 acknowledge + 3+3 push)
+- **Critical**: Corrected write order in EX (SP),HL and LD (nn),A instructions
+- **Fixed**: Added missing immediate operand handlers (ADC A,n, SBC A,n, AND n, OR n, XOR n)
+- **Fixed**: Corrected opcode table mappings for DAA, CPL, LD A,R, and immediate instructions
+- **Fixed**: DD/FD prefix fallthrough handling for chained prefixes
+- **Fixed**: Block transfer repeat timing (LDIR/LDDR) - corrected to 5 wait states for repetition
+- **Fixed**: Corrected flag preservation in accumulator rotates (RLA, RRA, RLCA, RRCA)
+- **Fixed**: Corrected undocumented flag handling in DAA instruction
+
+### Code Cleanup
+
+- Consolidated handler declarations and removed duplicates
+- Improved code organization and comments
+
 ## [2.4.0] — 2026-04-10
 
 ### Added

@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <string>
 #include "../include/z80/z80.h"
 #include "../include/z80/bus.h"
 
@@ -48,6 +49,10 @@ PYBIND11_MODULE(z80_core, m) {
         .def("write", &Bus::write, "Write to memory address")
         .def("in", &Bus::in, "Read from I/O port")
         .def("out", &Bus::out, "Write to I/O port")
+        .def("in_port", &Bus::in, "Read from I/O port (alias)")
+        .def("out_port", &Bus::out, "Write to I/O port (alias)")
+        .def("in_", &Bus::in, "Read from I/O port (alias)")
+        .def("out_", &Bus::out, "Write to I/O port (alias)")
         .def("contend", &Bus::contend, "Simulate memory contention")
         .def("m1_cycle", &Bus::m1_cycle, "M1 cycle hook for R register")
         .def("interrupt_acknowledge", &Bus::interrupt_acknowledge, "Interrupt acknowledge");
@@ -61,18 +66,24 @@ PYBIND11_MODULE(z80_core, m) {
         .def("write", &SimpleBus::write, "Write to memory")
         .def("in", &SimpleBus::in, "Read from port")
         .def("out", &SimpleBus::out, "Write to port")
+        .def("in_port", &SimpleBus::in, "Read from port (alias)")
+        .def("out_port", &SimpleBus::out, "Write to port (alias)")
+        .def("in_", &SimpleBus::in, "Read from port (alias)")
+        .def("out_", &SimpleBus::out, "Write to port (alias)")
         .def_property("memory", 
             [](SimpleBus& self) { return py::bytes(reinterpret_cast<char*>(self.memory), 65536); },
             [](SimpleBus& self, py::bytes data) { 
-                if (data.size() >= 65536) {
-                    memcpy(self.memory, data.data(), 65536);
+                std::string s = data;
+                if (s.size() >= 65536) {
+                    memcpy(self.memory, s.data(), 65536);
                 }
             })
         .def_property("io_ports",
             [](SimpleBus& self) { return py::bytes(reinterpret_cast<char*>(self.io_ports), 256); },
             [](SimpleBus& self, py::bytes data) {
-                if (data.size() >= 256) {
-                    memcpy(self.io_ports, data.data(), 256);
+                std::string s = data;
+                if (s.size() >= 256) {
+                    memcpy(self.io_ports, s.data(), 256);
                 }
             });
 
@@ -95,6 +106,9 @@ PYBIND11_MODULE(z80_core, m) {
         .def_readwrite("PC", &Registers::PC)
         .def_readwrite("I", &Registers::I)
         .def_readwrite("R", &Registers::R)
+        .def_readwrite("IFF1", &Registers::IFF1)
+        .def_readwrite("IFF2", &Registers::IFF2)
+        .def_readwrite("IM", &Registers::IM)
         .def_property("BC", 
             [](const Registers& r) { return r.BC(); },
             [](Registers& r, uint16_t v) { r.set_BC(v); })
@@ -106,7 +120,19 @@ PYBIND11_MODULE(z80_core, m) {
             [](Registers& r, uint16_t v) { r.set_HL(v); })
         .def_property("AF",
             [](const Registers& r) { return r.AF(); },
-            [](Registers& r, uint16_t v) { r.set_AF(v); });
+            [](Registers& r, uint16_t v) { r.set_AF(v); })
+        .def_property("IXH",
+            [](const Registers& r) { return r.IXh(); },
+            [](Registers& r, uint8_t v) { r.set_IXh(v); })
+        .def_property("IXL",
+            [](const Registers& r) { return r.IXl(); },
+            [](Registers& r, uint8_t v) { r.set_IXl(v); })
+        .def_property("IYH",
+            [](const Registers& r) { return r.IYh(); },
+            [](Registers& r, uint8_t v) { r.set_IYh(v); })
+        .def_property("IYL",
+            [](const Registers& r) { return r.IYl(); },
+            [](Registers& r, uint8_t v) { r.set_IYl(v); });
 
     // ============================================================
     // Z80 CPU class
@@ -125,36 +151,39 @@ PYBIND11_MODULE(z80_core, m) {
         .def("has_pending_interrupt", &Z80::has_pending_interrupt, "Check for pending interrupt")
         .def("has_pending_nmi", &Z80::has_pending_nmi, "Check for pending NMI")
         
+        // CPU state properties
+        .def_property("halted", 
+            [](Z80& self) { return self.halted; },
+            [](Z80& self, bool v) { self.halted = v; })
+        .def_property("IFF1", 
+            [](Z80& self) { return self.regs.IFF1; },
+            [](Z80& self, bool v) { self.regs.IFF1 = v; })
+        .def_property("IFF2", 
+            [](Z80& self) { return self.regs.IFF2; },
+            [](Z80& self, bool v) { self.regs.IFF2 = v; })
+        .def_property("IM", 
+            [](Z80& self) { return self.regs.IM; },
+            [](Z80& self, uint8_t v) { self.regs.IM = v; })
+        .def_property("bus",
+            [](Z80& self) -> Bus* { return self.bus_ptr; },
+            [](Z80& self, Bus* b) { self.set_bus(b); })
+        
         // Register access
         .def_property("registers", 
             [](Z80& self) -> Registers& { return self.regs; },
             [](Z80& self, Registers& r) { self.regs = r; })
-        .def("get_registers", &Z80::get_registers, "Get register state")
+        .def("get_registers", (Registers& (Z80::*)()) &Z80::get_registers, "Get register state")
         
         // Memory/IO access
         .def("set_bus", &Z80::set_bus, "Set bus interface")
         .def("read_memory", [](Z80& self, uint16_t addr) { return self.read(addr); }, "Read memory")
         .def("write_memory", [](Z80& self, uint16_t addr, uint8_t val) { self.write(addr, val); }, "Write memory")
+        .def("in_port", [](Z80& self, uint16_t port) { return self.in(port); }, "Read from I/O port")
+        .def("out_port", [](Z80& self, uint16_t port, uint8_t val) { self.out(port, val); }, "Write to I/O port")
         
         // Cycle info
         .def("get_cycles", &Z80::get_cycles, "Get total T-states executed")
-        .def("get_instruction_count", &Z80::get_instruction_count, "Get instructions executed")
-        
-        // Direct memory access for Python
-        .def_property("direct_memory", 
-            [](Z80& self) { return py::bytes(reinterpret_cast<char*>(self.direct_memory), 65536); },
-            [](Z80& self, py::bytes data) {
-                if (data.size() >= 65536) {
-                    memcpy(self.direct_memory, data.data(), 65536);
-                }
-            })
-        .def_property("direct_io",
-            [](Z80& self) { return py::bytes(reinterpret_cast<char*>(self.direct_io), 256); },
-            [](Z80& self, py::bytes data) {
-                if (data.size() >= 256) {
-                    memcpy(self.direct_io, data.data(), 256);
-                }
-            });
+        .def("get_instruction_count", &Z80::get_instruction_count, "Get instructions executed");
 }
 
 } // namespace z80

@@ -29,6 +29,9 @@ void OpcodeTable::init() {
         fdcb_table[i] = Instruction(nullptr, 23, 4, false);
     }
 
+    // Initialize flag tables
+    FlagTables::init();
+
     // =====================
     // Main opcode table (0x00-0xFF)
     // =====================
@@ -81,7 +84,7 @@ void OpcodeTable::init() {
     main_table[0x24] = {handle_inc_r, 4, 1, true};
     main_table[0x25] = {handle_dec_r, 4, 1, true};
     main_table[0x26] = {handle_ld_r_n, 7, 2, false};
-    main_table[0x27] = {handle_add_a, 4, 1, true};
+    main_table[0x27] = {handle_daa, 4, 1, true};
 
     // 0x28-0x2F
     main_table[0x28] = {handle_jr_cc_e, 12, 2, false};
@@ -91,7 +94,7 @@ void OpcodeTable::init() {
     main_table[0x2C] = {handle_inc_r, 4, 1, true};
     main_table[0x2D] = {handle_dec_r, 4, 1, true};
     main_table[0x2E] = {handle_ld_r_n, 7, 2, false};
-    main_table[0x2F] = {handle_sub, 4, 1, true};
+    main_table[0x2F] = {handle_cpl, 4, 1, false};
 
     // 0x30-0x37
     main_table[0x30] = {handle_jr_cc_e, 12, 2, false};
@@ -161,7 +164,7 @@ void OpcodeTable::init() {
     main_table[0x64] = {handle_ld_r_r, 4, 1, false};
     main_table[0x65] = {handle_ld_r_r, 4, 1, false};
     main_table[0x66] = {handle_ld_r_hl, 7, 1, false};
-    main_table[0x67] = {handle_ld_hl_r, 7, 1, false};
+    main_table[0x67] = {handle_ld_r_r, 4, 1, false};  // LD H,A
 
     // 0x68-0x6F
     main_table[0x68] = {handle_ld_r_r, 4, 1, false};
@@ -171,7 +174,7 @@ void OpcodeTable::init() {
     main_table[0x6C] = {handle_ld_r_r, 4, 1, false};
     main_table[0x6D] = {handle_ld_r_r, 4, 1, false};
     main_table[0x6E] = {handle_ld_r_hl, 7, 1, false};
-    main_table[0x6F] = {handle_ld_hl_r, 7, 1, false};
+    main_table[0x6F] = {handle_ld_r_r, 4, 1, false};  // LD L,A
 
     // 0x70-0x77
     main_table[0x70] = {handle_ld_hl_r, 7, 1, false};
@@ -270,7 +273,7 @@ void OpcodeTable::init() {
     main_table[0xBB] = {handle_cp, 4, 1, true};
     main_table[0xBC] = {handle_cp, 4, 1, true};
     main_table[0xBD] = {handle_cp, 4, 1, true};
-    main_table[0xBE] = {handle_cp_n, 7, 2, true};
+    main_table[0xBE] = {handle_cp, 7, 1, true};
     main_table[0xBF] = {handle_cp, 4, 1, true};
 
     // 0xC0-0xC7: RET cc, POP
@@ -290,7 +293,7 @@ void OpcodeTable::init() {
     main_table[0xCB] = {nullptr, 0, 0, false};  // CB prefix handled specially
     main_table[0xCC] = {handle_call_cc_nn, 17, 3, false};
     main_table[0xCD] = {handle_call_nn, 17, 3, false};
-    main_table[0xCE] = {handle_adc_a, 7, 2, true};
+    main_table[0xCE] = {handle_adc_a_n, 7, 2, true};
     main_table[0xCF] = {handle_rst, 11, 1, false};
 
     // 0xD0-0xD7
@@ -310,7 +313,7 @@ void OpcodeTable::init() {
     main_table[0xDB] = {handle_in_a_n, 11, 2, false};
     main_table[0xDC] = {handle_call_cc_nn, 17, 3, false};
     main_table[0xDD] = {nullptr, 0, 0, false};  // DD prefix
-    main_table[0xDE] = {handle_sbc_a, 7, 2, true};
+    main_table[0xDE] = {handle_sbc_a_n, 7, 2, true};
     main_table[0xDF] = {handle_rst, 11, 1, false};
 
     // 0xE0-0xE7
@@ -320,7 +323,7 @@ void OpcodeTable::init() {
     main_table[0xE3] = {handle_ex_sp_hl, 19, 1, false};  // 19 T-states!
     main_table[0xE4] = {handle_call_cc_nn, 17, 3, false};
     main_table[0xE5] = {handle_push_rr, 11, 1, false};
-    main_table[0xE6] = {handle_and, 7, 2, true};
+    main_table[0xE6] = {handle_and_n, 7, 2, true};
     main_table[0xE7] = {handle_rst, 11, 1, false};
 
     // 0xE8-0xEF
@@ -330,7 +333,7 @@ void OpcodeTable::init() {
     main_table[0xEB] = {handle_ex_de_hl, 4, 1, false};
     main_table[0xEC] = {handle_call_cc_nn, 17, 3, false};
     main_table[0xED] = {nullptr, 0, 0, false};  // ED prefix
-    main_table[0xEE] = {handle_xor, 7, 2, true};
+    main_table[0xEE] = {handle_xor_n, 7, 2, true};
     main_table[0xEF] = {handle_rst, 11, 1, false};
 
     // 0xF0-0xF7
@@ -340,7 +343,7 @@ void OpcodeTable::init() {
     main_table[0xF3] = {handle_di, 4, 1, false};
     main_table[0xF4] = {handle_call_cc_nn, 17, 3, false};
     main_table[0xF5] = {handle_push_rr, 11, 1, false};
-    main_table[0xF6] = {handle_or, 7, 2, true};
+    main_table[0xF6] = {handle_or_n, 7, 2, true};
     main_table[0xF7] = {handle_rst, 11, 1, false};
 
     // 0xF8-0xFF
@@ -370,7 +373,7 @@ void OpcodeTable::init() {
     cb_table[0x03] = {handle_rlc_r, 8, 2, true};
     cb_table[0x04] = {handle_rlc_r, 8, 2, true};
     cb_table[0x05] = {handle_rlc_r, 8, 2, true};
-    cb_table[0x06] = {handle_rlc_r, 8, 2, true};  // (HL)
+    cb_table[0x06] = {handle_rlc_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x07] = {handle_rlc_r, 8, 2, true};
 
     // RRC r (0x08-0x0F)
@@ -380,7 +383,7 @@ void OpcodeTable::init() {
     cb_table[0x0B] = {handle_rrc_r, 8, 2, true};
     cb_table[0x0C] = {handle_rrc_r, 8, 2, true};
     cb_table[0x0D] = {handle_rrc_r, 8, 2, true};
-    cb_table[0x0E] = {handle_rrc_r, 8, 2, true};
+    cb_table[0x0E] = {handle_rrc_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x0F] = {handle_rrc_r, 8, 2, true};
 
     // RL r (0x10-0x17)
@@ -390,7 +393,7 @@ void OpcodeTable::init() {
     cb_table[0x13] = {handle_rl_r, 8, 2, true};
     cb_table[0x14] = {handle_rl_r, 8, 2, true};
     cb_table[0x15] = {handle_rl_r, 8, 2, true};
-    cb_table[0x16] = {handle_rl_r, 8, 2, true};
+    cb_table[0x16] = {handle_rl_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x17] = {handle_rl_r, 8, 2, true};
 
     // RR r (0x18-0x1F)
@@ -400,7 +403,7 @@ void OpcodeTable::init() {
     cb_table[0x1B] = {handle_rr_r, 8, 2, true};
     cb_table[0x1C] = {handle_rr_r, 8, 2, true};
     cb_table[0x1D] = {handle_rr_r, 8, 2, true};
-    cb_table[0x1E] = {handle_rr_r, 8, 2, true};
+    cb_table[0x1E] = {handle_rr_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x1F] = {handle_rr_r, 8, 2, true};
 
     // SLA r (0x20-0x27)
@@ -410,7 +413,7 @@ void OpcodeTable::init() {
     cb_table[0x23] = {handle_sla_r, 8, 2, true};
     cb_table[0x24] = {handle_sla_r, 8, 2, true};
     cb_table[0x25] = {handle_sla_r, 8, 2, true};
-    cb_table[0x26] = {handle_sla_r, 8, 2, true};
+    cb_table[0x26] = {handle_sla_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x27] = {handle_sla_r, 8, 2, true};
 
     // SRA r (0x28-0x2F)
@@ -420,7 +423,7 @@ void OpcodeTable::init() {
     cb_table[0x2B] = {handle_sra_r, 8, 2, true};
     cb_table[0x2C] = {handle_sra_r, 8, 2, true};
     cb_table[0x2D] = {handle_sra_r, 8, 2, true};
-    cb_table[0x2E] = {handle_sra_r, 8, 2, true};
+    cb_table[0x2E] = {handle_sra_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x2F] = {handle_sra_r, 8, 2, true};
 
     // SLL r (0x30-0x37) - Undocumented
@@ -430,7 +433,7 @@ void OpcodeTable::init() {
     cb_table[0x33] = {handle_sll_r, 8, 2, true};
     cb_table[0x34] = {handle_sll_r, 8, 2, true};
     cb_table[0x35] = {handle_sll_r, 8, 2, true};
-    cb_table[0x36] = {handle_sll_r, 8, 2, true};
+    cb_table[0x36] = {handle_sll_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x37] = {handle_sll_r, 8, 2, true};
 
     // SRL r (0x38-0x3F)
@@ -440,23 +443,48 @@ void OpcodeTable::init() {
     cb_table[0x3B] = {handle_srl_r, 8, 2, true};
     cb_table[0x3C] = {handle_srl_r, 8, 2, true};
     cb_table[0x3D] = {handle_srl_r, 8, 2, true};
-    cb_table[0x3E] = {handle_srl_r, 8, 2, true};
+    cb_table[0x3E] = {handle_srl_r, 15, 2, true};  // (HL) - 15 cycles
     cb_table[0x3F] = {handle_srl_r, 8, 2, true};
 
-    // BIT b, r (0x40-0x7F)
+// BIT b, r (0x40-0x7F)
     for (int i = 0; i < 64; i++) {
         cb_table[0x40 + i] = {handle_cb_bit, 8, 2, true};
     }
+    // BIT b,(HL) - fix timing
+    cb_table[0x46] = {handle_cb_bit, 12, 2, true};
+    cb_table[0x4E] = {handle_cb_bit, 12, 2, true};
+    cb_table[0x56] = {handle_cb_bit, 12, 2, true};
+    cb_table[0x5E] = {handle_cb_bit, 12, 2, true};
+    cb_table[0x66] = {handle_cb_bit, 12, 2, true};
+    cb_table[0x6E] = {handle_cb_bit, 12, 2, true};
 
-    // RES b, r (0x80-0xAF)
-    for (int i = 0; i < 48; i++) {
+    // RES b, r (0x80-0xBF) - full range
+    for (int i = 0; i < 64; i++) {
         cb_table[0x80 + i] = {handle_cb_res, 8, 2, true};
     }
+    // RES b,(HL) - fix timing
+    cb_table[0x86] = {handle_cb_res, 15, 2, true};
+    cb_table[0x8E] = {handle_cb_res, 15, 2, true};
+    cb_table[0x96] = {handle_cb_res, 15, 2, true};
+    cb_table[0x9E] = {handle_cb_res, 15, 2, true};
+    cb_table[0xA6] = {handle_cb_res, 15, 2, true};
+    cb_table[0xAE] = {handle_cb_res, 15, 2, true};
+    cb_table[0xB6] = {handle_cb_res, 15, 2, true};
+    cb_table[0xBE] = {handle_cb_res, 15, 2, true};
 
-    // SET b, r (0xB0-0xFF)
-    for (int i = 0; i < 80; i++) {
-        cb_table[0xB0 + i] = {handle_cb_set, 8, 2, true};
+    // SET b, r (0xC0-0xFF) - fixed range
+    for (int i = 0; i < 64; i++) {
+        cb_table[0xC0 + i] = {handle_cb_set, 8, 2, true};
     }
+    // SET b,(HL) - fix timing
+    cb_table[0xC6] = {handle_cb_set, 15, 2, true};
+    cb_table[0xCE] = {handle_cb_set, 15, 2, true};
+    cb_table[0xD6] = {handle_cb_set, 15, 2, true};
+    cb_table[0xDE] = {handle_cb_set, 15, 2, true};
+    cb_table[0xE6] = {handle_cb_set, 15, 2, true};
+    cb_table[0xEE] = {handle_cb_set, 15, 2, true};
+    cb_table[0xF6] = {handle_cb_set, 15, 2, true};
+    cb_table[0xFE] = {handle_cb_set, 15, 2, true};
 
     // =====================
     // ED prefix table
@@ -464,49 +492,39 @@ void OpcodeTable::init() {
     // Block transfers
     ed_table[0xA0] = {handle_ldi, 16, 2, true};
     ed_table[0xA1] = {handle_cpi, 16, 2, true};
-    ed_table[0xA2] = {handle_outi, 12, 2, false};
-    ed_table[0xA3] = {handle_otir, 12, 2, false};
+    ed_table[0xA2] = {handle_ini, 16, 2, true};
+    ed_table[0xA3] = {handle_outi, 16, 2, true};
     
     ed_table[0xA8] = {handle_ldd, 16, 2, true};
     ed_table[0xA9] = {handle_cpd, 16, 2, true};
-    ed_table[0xAA] = {handle_outd, 12, 2, false};
-    ed_table[0xAB] = {handle_otdr, 12, 2, false};
+    ed_table[0xAA] = {handle_ind, 16, 2, true};
+    ed_table[0xAB] = {handle_outd, 16, 2, true};
 
     // LDIR/CPIR/LDDR/CPDR
     ed_table[0xB0] = {handle_ldir, 21, 2, true};
     ed_table[0xB1] = {handle_cpir, 21, 2, true};
-    ed_table[0xB2] = {handle_inir, 12, 2, false};
-    ed_table[0xB3] = {handle_indr, 12, 2, false};
+    ed_table[0xB2] = {handle_inir, 21, 2, true};
+    ed_table[0xB3] = {handle_otir, 21, 2, true};
     
     ed_table[0xB8] = {handle_lddr, 21, 2, true};
     ed_table[0xB9] = {handle_cpdr, 21, 2, true};
-    ed_table[0xBA] = {handle_ind, 12, 2, false};
-    ed_table[0xBB] = {handle_indr, 12, 2, false};
+    ed_table[0xBA] = {handle_indr, 21, 2, true};
+    ed_table[0xBB] = {handle_otdr, 21, 2, true};
 
-    // IN/OUT with C
-    ed_table[0x70] = {handle_in_r_c, 12, 2, true};  // IN (C)
-    ed_table[0x71] = {handle_in_r_c, 12, 2, true};  // IN (C)
-    ed_table[0x78] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x79] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x7A] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x7B] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x7C] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x7D] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x7E] = {handle_in_r_c, 12, 2, true};
-    ed_table[0x7F] = {handle_in_r_c, 12, 2, true};
-    
-    ed_table[0xA4] = {handle_out_c_r, 12, 2, false};
-    ed_table[0xA5] = {handle_out_c_r, 12, 2, false};
-    ed_table[0xAC] = {handle_out_c_r, 12, 2, false};
-    ed_table[0xAD] = {handle_out_c_r, 12, 2, false};
-    ed_table[0xAE] = {handle_out_c_r, 12, 2, false};
-    ed_table[0xAF] = {handle_out_c_r, 12, 2, false};
+    // IN r,(C) - 0x40,0x48,0x50,0x58,0x60,0x68,0x70,0x78 (B,C,D,E,H,L,F,A)
+    for (int r = 0; r < 8; r++) {
+        ed_table[0x40 + (r << 3)] = {handle_in_r_c, 12, 2, true};
+    }
+    // OUT (C),r - 0x41,0x49,0x51,0x59,0x61,0x69,0x71,0x79
+    for (int r = 0; r < 8; r++) {
+        ed_table[0x41 + (r << 3)] = {handle_out_c_r, 12, 2, false};
+    }
 
     // 16-bit loads
-    ed_table[0x43] = {handle_ld_nn_rr, 20, 4, false};  // LD (nn), BC
-    ed_table[0x53] = {handle_ld_nn_rr, 20, 4, false};  // LD (nn), DE
-    ed_table[0x63] = {handle_ld_nn_rr, 20, 4, false};  // LD (nn), HL
-    ed_table[0x73] = {handle_ld_nn_rr, 20, 4, false};  // LD (nn), SP
+    ed_table[0x43] = {handle_ld_nn_rr_ind, 20, 4, false};  // LD (nn), BC
+    ed_table[0x53] = {handle_ld_nn_rr_ind, 20, 4, false};  // LD (nn), DE
+    ed_table[0x63] = {handle_ld_nn_rr_ind, 20, 4, false};  // LD (nn), HL
+    ed_table[0x73] = {handle_ld_nn_rr_ind, 20, 4, false};  // LD (nn), SP
     
     ed_table[0x4B] = {handle_ld_rr_nn_ind, 20, 4, false};  // LD BC, (nn)
     ed_table[0x5B] = {handle_ld_rr_nn_ind, 20, 4, false};  // LD DE, (nn)
@@ -556,7 +574,7 @@ void OpcodeTable::init() {
     ed_table[0x7D] = {handle_retn, 14, 2, false};
 
     // LD A, I / LD A, R
-    ed_table[0x58] = {handle_ld_a_i, 9, 2, true};
+    ed_table[0x5F] = {handle_ld_a_r, 9, 2, true};
     ed_table[0x78] = {handle_ld_a_r, 9, 2, true};
 
     // =====================
@@ -587,8 +605,26 @@ void OpcodeTable::init() {
     dd_table[0x2B] = {handle_dd_fd_dec_ix, 10, 2, false};  // DEC IX
     fd_table[0x2B] = {handle_dd_fd_dec_ix, 10, 2, false};  // DEC IY
     
+    // INC/DEC IXH and IXL (DD prefix)
+    dd_table[0x24] = {handle_dd_fd_inc_ixhl, 8, 2, true};  // INC IXH
+    dd_table[0x25] = {handle_dd_fd_dec_ixhl, 8, 2, true};   // DEC IXH
+    dd_table[0x2C] = {handle_dd_fd_inc_ixhl, 8, 2, true};   // INC IXL
+    dd_table[0x2D] = {handle_dd_fd_dec_ixhl, 8, 2, true};   // DEC IXL
+    
+    // Same for FD prefix
+    fd_table[0x24] = {handle_dd_fd_inc_ixhl, 8, 2, true};  // INC IYH
+    fd_table[0x25] = {handle_dd_fd_dec_ixhl, 8, 2, true};   // DEC IYH
+    fd_table[0x2C] = {handle_dd_fd_inc_ixhl, 8, 2, true};   // INC IYL
+    fd_table[0x2D] = {handle_dd_fd_dec_ixhl, 8, 2, true};   // DEC IYL
+    
+    dd_table[0x09] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IX, BC
+    fd_table[0x09] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IY, BC
+    dd_table[0x19] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IX, DE
+    fd_table[0x19] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IY, DE
     dd_table[0x29] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IX, IX
     fd_table[0x29] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IY, IY
+    dd_table[0x39] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IX, SP
+    fd_table[0x39] = {handle_dd_fd_add_ix_rr, 15, 2, false};  // ADD IY, SP
     
     dd_table[0xF9] = {handle_dd_fd_ld_sp_ix, 10, 2, false};  // LD SP, IX
     fd_table[0xF9] = {handle_dd_fd_ld_sp_ix, 10, 2, false};  // LD SP, IY
@@ -607,17 +643,155 @@ void OpcodeTable::init() {
 
     // Indexed operations - LD r, (IX+d) and LD (IX+d), r
     // 0x46 = LD (IX+d), A is a common one
-    dd_table[0x46] = {handle_dd_fd_ld_ixd_n, 19, 3, false};  // LD (IX+d), n
-    fd_table[0x46] = {handle_dd_fd_ld_ixd_n, 19, 3, false};  // LD (IY+d), n
-    
-    dd_table[0x4E] = {handle_dd_fd_ld_r_ixd, 19, 3, false};  // LD r, (IX+d)
-    fd_table[0x4E] = {handle_dd_fd_ld_r_ixd, 19, 3, false};  // LD r, (IY+d)
+    // LD r,(IX+d) for all r != 6: opcodes 0x46,0x4E,0x56,0x5E,0x66,0x6E,0x7E
+    for (int r = 0; r < 8; r++) {
+        if (r != 6) {
+            dd_table[0x46 + (r << 3)] = {handle_dd_fd_ld_r_ixd, 23, 3, false};
+            fd_table[0x46 + (r << 3)] = {handle_dd_fd_ld_r_ixd, 23, 3, false};
+            }
+            }
+            // LD (IX+d),r for all r != 6: opcodes 0x70..0x77 except 0x76 (HALT)
+            for (int r = 0; r < 8; r++) {
+            if (r != 6) {
+            dd_table[0x70 + r] = {handle_dd_fd_ld_ixd_r, 23, 3, false};
+            fd_table[0x70 + r] = {handle_dd_fd_ld_ixd_r, 23, 3, false};
+            }
+            }
+            // LD (IX+d),n
+            dd_table[0x36] = {handle_dd_fd_ld_ixd_n, 23, 3, false};
+            fd_table[0x36] = {handle_dd_fd_ld_ixd_n, 23, 3, false};
     
     // INC/DEC (IX+d)
     dd_table[0x34] = {handle_dd_fd_inc_ixd, 23, 3, true};  // INC (IX+d)
     fd_table[0x34] = {handle_dd_fd_inc_ixd, 23, 3, true};
     dd_table[0x35] = {handle_dd_fd_dec_ixd, 23, 3, true};  // DEC (IX+d)
     fd_table[0x35] = {handle_dd_fd_dec_ixd, 23, 3, true};
+
+    // ADD A, IXH/IXL (0x84/0x85) and similar arithmetic on IXH/IXL
+    // These take precedence over indexed (IX+d) versions
+    dd_table[0x84] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADD A, IXH
+    dd_table[0x85] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADD A, IXL
+    dd_table[0x8C] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADC A, IXH
+    dd_table[0x8D] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADC A, IXL
+    
+    dd_table[0x94] = {handle_dd_fd_sub_ixhl, 8, 2, true};    // SUB A, IXH
+    dd_table[0x95] = {handle_dd_fd_sub_ixhl, 8, 2, true};    // SUB A, IXL
+    dd_table[0x9C] = {handle_dd_fd_sub_ixhl, 8, 2, true};    // SBC A, IXH
+    dd_table[0x9D] = {handle_dd_fd_sub_ixhl, 8, 2, true};    // SBC A, IXL
+    
+    dd_table[0xA4] = {handle_dd_fd_and_ixhl, 8, 2, false};   // AND A, IXH
+    dd_table[0xA5] = {handle_dd_fd_and_ixhl, 8, 2, false};   // AND A, IXL
+    
+    dd_table[0xB4] = {handle_dd_fd_or_ixhl, 8, 2, false};    // OR A, IXH
+    dd_table[0xB5] = {handle_dd_fd_or_ixhl, 8, 2, false};    // OR A, IXL
+    
+    dd_table[0xAC] = {handle_dd_fd_xor_ixhl, 8, 2, false};    // XOR A, IXH
+    dd_table[0xAD] = {handle_dd_fd_xor_ixhl, 8, 2, false};    // XOR A, IXL
+    
+    dd_table[0xBC] = {handle_dd_fd_cp_ixhl, 8, 2, true};     // CP A, IXH
+    dd_table[0xBD] = {handle_dd_fd_cp_ixhl, 8, 2, true};     // CP A, IXL
+    
+    // ADD/SUB/AND/OR/XOR/CP A,(IX+d) - 0x86,0x8E,0x96,0x9E,0xA6,0xAE,0xB6,0xBE with displacement
+    // ADD A,(IX+d): DD 86 dd
+    dd_table[0x86] = {handle_dd_fd_add_a_ixd, 19, 3, true};  // ADD A,(IX+d)
+    dd_table[0x8E] = {handle_dd_fd_add_a_ixd, 19, 3, true};  // ADC A,(IX+d)
+    dd_table[0x96] = {handle_dd_fd_sub_ixd, 19, 3, true};    // SUB A,(IX+d)
+    dd_table[0x9E] = {handle_dd_fd_sub_ixd, 19, 3, true};    // SBC A,(IX+d)
+    dd_table[0xA6] = {handle_dd_fd_and_ixd, 19, 3, false};    // AND A,(IX+d)
+    dd_table[0xAE] = {handle_dd_fd_xor_ixd, 19, 3, false};   // XOR A,(IX+d)
+    dd_table[0xB6] = {handle_dd_fd_or_ixd, 19, 3, false};     // OR A,(IX+d)
+    dd_table[0xBE] = {handle_dd_fd_cp_ixd, 19, 3, true};      // CP A,(IX+d)
+    
+    // Same for FD prefix (IYH/IYL)
+    fd_table[0x84] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADD A, IYH
+    fd_table[0x85] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADD A, IYL
+    fd_table[0x8C] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADC A, IYH
+    fd_table[0x8D] = {handle_dd_fd_add_a_ixhl, 8, 2, true};   // ADC A, IYL
+    fd_table[0x94] = {handle_dd_fd_sub_ixhl, 8, 2, true};
+    fd_table[0x95] = {handle_dd_fd_sub_ixhl, 8, 2, true};
+    fd_table[0x9C] = {handle_dd_fd_sub_ixhl, 8, 2, true};
+    fd_table[0x9D] = {handle_dd_fd_sub_ixhl, 8, 2, true};
+    fd_table[0xA4] = {handle_dd_fd_and_ixhl, 8, 2, false};
+    fd_table[0xA5] = {handle_dd_fd_and_ixhl, 8, 2, false};
+    fd_table[0xB4] = {handle_dd_fd_or_ixhl, 8, 2, false};
+    fd_table[0xB5] = {handle_dd_fd_or_ixhl, 8, 2, false};
+    fd_table[0xAC] = {handle_dd_fd_xor_ixhl, 8, 2, false};
+    fd_table[0xAD] = {handle_dd_fd_xor_ixhl, 8, 2, false};
+    fd_table[0xBC] = {handle_dd_fd_cp_ixhl, 8, 2, true};
+    fd_table[0xBD] = {handle_dd_fd_cp_ixhl, 8, 2, true};
+    
+    // ADD/SUB/AND/OR/XOR/CP A,(IY+d) - same as DD but for IY
+    fd_table[0x86] = {handle_dd_fd_add_a_ixd, 19, 3, true};  // ADD A,(IY+d)
+    fd_table[0x8E] = {handle_dd_fd_add_a_ixd, 19, 3, true};  // ADC A,(IY+d)
+    fd_table[0x96] = {handle_dd_fd_sub_ixd, 19, 3, true};    // SUB A,(IY+d)
+    fd_table[0x9E] = {handle_dd_fd_sub_ixd, 19, 3, true};    // SBC A,(IY+d)
+    fd_table[0xA6] = {handle_dd_fd_and_ixd, 19, 3, false};   // AND A,(IY+d)
+    fd_table[0xAE] = {handle_dd_fd_xor_ixd, 19, 3, false};   // XOR A,(IY+d)
+    fd_table[0xB6] = {handle_dd_fd_or_ixd, 19, 3, false};    // OR A,(IY+d)
+    fd_table[0xBE] = {handle_dd_fd_cp_ixd, 19, 3, true};      // CP A,(IY+d)
+    
+// LD r, IXH (0x44=LD B,IXH, 0x4C=LD C,IXH, 0x54=LD D,IXH, 0x5C=LD E,IXH, 0x64=LD H,IXH, 0x6C=LD L,IXH)
+    // These are in the pattern 0x40 + r*8, which normally is LD (IX+d),r for indexed
+    // but for DD prefix with r=IXH/L it means LD r,IXH/IXL
+    dd_table[0x44] = {handle_ld_ixhl_r, 8, 2, false};  // LD B, IXH
+    dd_table[0x4C] = {handle_ld_ixhl_r, 8, 2, false};  // LD C, IXH
+    dd_table[0x54] = {handle_ld_ixhl_r, 8, 2, false};  // LD D, IXH
+    dd_table[0x5C] = {handle_ld_ixhl_r, 8, 2, false};  // LD E, IXH
+    dd_table[0x64] = {handle_ld_ixhl_r, 8, 2, false};  // LD H, IXH
+    dd_table[0x6C] = {handle_ld_ixhl_r, 8, 2, false};  // LD L, IXH
+    
+    dd_table[0x45] = {handle_ld_ixhl_r, 8, 2, false};  // LD B, IXL
+    dd_table[0x4D] = {handle_ld_ixhl_r, 8, 2, false};  // LD C, IXL
+    dd_table[0x55] = {handle_ld_ixhl_r, 8, 2, false};  // LD D, IXL
+    dd_table[0x5D] = {handle_ld_ixhl_r, 8, 2, false};  // LD E, IXL
+    dd_table[0x65] = {handle_ld_ixhl_r, 8, 2, false};  // LD H, IXL
+    dd_table[0x6D] = {handle_ld_ixhl_r, 8, 2, false};  // LD L, IXL
+    
+    fd_table[0x44] = {handle_ld_ixhl_r, 8, 2, false};  // LD B, IYH
+    fd_table[0x4C] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x54] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x5C] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x64] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x6C] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x45] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x4D] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x55] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x5D] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x65] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x6D] = {handle_ld_ixhl_r, 8, 2, false};
+
+    // =====================
+    // DD/FD IXH/IXL register loads (0x26, 0x2E, 0x60-0x67)
+    // =====================
+    // LD IXH, n (0x26) and LD IXL, n (0x2E)
+    dd_table[0x26] = {handle_ld_ixhl_n, 11, 3, false};
+    fd_table[0x26] = {handle_ld_ixhl_n, 11, 3, false};
+    dd_table[0x2E] = {handle_ld_ixhl_n, 11, 3, false};
+    fd_table[0x2E] = {handle_ld_ixhl_n, 11, 3, false};
+    
+    // LD IXH, r (0x60-0x67) - 0x60=IXH,B, 0x61=IXH,C, ..., 0x67=IXH,A
+    dd_table[0x60] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x61] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x62] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x63] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x67] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x60] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x61] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x62] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x63] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x67] = {handle_ld_ixhl_r, 8, 2, false};
+    
+    // LD IXL, r (0x68-0x6F)
+    dd_table[0x68] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x69] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x6A] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x6B] = {handle_ld_ixhl_r, 8, 2, false};
+    dd_table[0x6F] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x68] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x69] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x6A] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x6B] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x6F] = {handle_ld_ixhl_r, 8, 2, false};
 
     // =====================
     // DDCB/FDCB prefix tables
@@ -631,8 +805,8 @@ void OpcodeTable::init() {
         fdcb_table[i] = {handle_ddcb_fdcb_rot, 23, 4, true};
     }
     for (int i = 0; i < 64; i++) {
-        ddcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 20, 4, true};
-        fdcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 20, 4, true};
+        ddcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 43, 4, true};
+        fdcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 43, 4, true};
     }
     for (int i = 0; i < 48; i++) {
         ddcb_table[0x80 + i] = {handle_ddcb_fdcb_res, 23, 4, true};

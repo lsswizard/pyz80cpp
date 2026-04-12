@@ -93,61 +93,44 @@ public:
     // ============================================================
     
     // M1 cycle - instruction fetch (4 T-states, increments R)
-    inline uint8_t fetch() {
-        if (bus_ptr) {
-            bus_ptr->m1_cycle();
-            regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
-            uint8_t val = bus_ptr->read(regs.PC);
-            regs.PC = (regs.PC + 1) & 0xFFFF;
-            add_cycles(4);
-            return val;
-        }
-        // Fallback: direct memory
-        uint8_t val = direct_memory[regs.PC];
-        regs.PC = (regs.PC + 1) & 0xFFFF;
+    inline uint8_t fetch_opcode() {
+        bus_ptr->m1_cycle();
         regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
+        uint8_t val = bus_ptr->read(regs.PC);
+        regs.PC = (regs.PC + 1) & 0xFFFF;
         add_cycles(4);
         return val;
+    }
+
+    // Fetch operand byte (3 T-states, no R increment)
+    inline uint8_t fetch_byte() {
+        return read(regs.PC++);
     }
 
     // Memory read (3 T-states)
     inline uint8_t read(uint16_t addr) {
         add_cycles(3);
-        if (bus_ptr) {
-            bus_ptr->contend(addr, 3);
-            return bus_ptr->read(addr);
-        }
-        return direct_memory[addr & 0xFFFF];
+        bus_ptr->contend(addr, 3);
+        return bus_ptr->read(addr);
     }
 
     // Memory write (3 T-states)
     inline void write(uint16_t addr, uint8_t value) {
         add_cycles(3);
-        if (bus_ptr) {
-            bus_ptr->contend(addr, 3);
-            bus_ptr->write(addr, value);
-        } else {
-            direct_memory[addr & 0xFFFF] = value;
-        }
+        bus_ptr->contend(addr, 3);
+        bus_ptr->write(addr, value);
     }
 
     // I/O read (4 T-states, with contention)
     inline uint8_t in(uint16_t port) {
         add_cycles(4);
-        if (bus_ptr) {
-            return bus_ptr->in(port);
-        }
-        return direct_io[port & 0xFF];
+        return bus_ptr->in(port);
     }
 
     // I/O write (4 T-states, with contention)
     inline void out(uint16_t port, uint8_t value) {
         add_cycles(4);
-        if (bus_ptr) {
-            bus_ptr->out(port, value);
-        } else {
-            direct_io[port & 0xFF] = value;
-        }
+        bus_ptr->out(port, value);
     }
 
     // Wait (add cycles without bus access)
@@ -179,16 +162,7 @@ public:
     // ============================================================
     // Set bus (can be changed at runtime)
     // ============================================================
-    void set_bus(Bus* new_bus) {
-        bus_ptr = new_bus;
-        use_direct_memory = (bus_ptr == nullptr);
-    }
-
-    // ============================================================
-    // Direct memory access (for simple testing without bus)
-    // ============================================================
-    uint8_t* get_direct_memory() { return direct_memory; }
-    uint8_t* get_direct_io() { return direct_io; }
+    void set_bus(Bus* new_bus);
 
     // ============================================================
     // PUBLIC members - accessible to handlers
@@ -197,9 +171,6 @@ public:
     uint8_t current_opcode;
     bool prefix_ix;
     Bus* bus_ptr;
-    bool use_direct_memory;
-    uint8_t direct_memory[65536];
-    uint8_t direct_io[256];
     int total_cycles;
     int instruction_count;
     bool halted;
@@ -207,10 +178,14 @@ public:
     bool nmi_pending;
     uint8_t interrupt_data;
     PrefixState prefix_state;
+    // DDCB/FDCB pre-fetched values (to avoid double-read)
+    int8_t ddcb_displacement;
+    uint8_t ddcb_opcode;
 
 private:
+    bool owns_bus;
     // Internal execution
-    int execute_instruction();
+    void execute_instruction();
     int handle_prefix(uint8_t opcode);
 };
 
