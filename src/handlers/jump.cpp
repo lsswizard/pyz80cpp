@@ -8,12 +8,16 @@ namespace z80 {
     // ============================================================
 
     void handle_jp_nn(Z80& cpu) {
-        uint16_t addr = cpu.read(cpu.regs.PC++) | (cpu.read(cpu.regs.PC++) << 8);
+        uint16_t lo = cpu.read(cpu.regs.PC++);
+        uint16_t hi = cpu.read(cpu.regs.PC++);
+        uint16_t addr = (hi << 8) | lo;
         cpu.regs.PC = cpu.regs.MEMPTR = addr;
     }
 
     void handle_jp_cc_nn(Z80& cpu) {
-        uint16_t addr = cpu.read(cpu.regs.PC++) | (cpu.read(cpu.regs.PC++) << 8);
+        uint16_t lo = cpu.read(cpu.regs.PC++);
+        uint16_t hi = cpu.read(cpu.regs.PC++);
+        uint16_t addr = (hi << 8) | lo;
         cpu.regs.MEMPTR = addr;
         if (cpu.check_condition((cpu.current_opcode >> 3) & 7)) {
             cpu.regs.PC = addr;
@@ -50,7 +54,9 @@ namespace z80 {
     // ============================================================
 
     void handle_call_nn(Z80& cpu) {
-        uint16_t addr = cpu.read(cpu.regs.PC++) | (cpu.read(cpu.regs.PC++) << 8);
+        uint16_t lo = cpu.read(cpu.regs.PC++);
+        uint16_t hi = cpu.read(cpu.regs.PC++);
+        uint16_t addr = (hi << 8) | lo;
         cpu.regs.MEMPTR = addr;
         cpu.wait(1);
         cpu.write(--cpu.regs.SP, cpu.regs.PC >> 8);
@@ -59,7 +65,9 @@ namespace z80 {
     }
 
     void handle_call_cc_nn(Z80& cpu) {
-        uint16_t addr = cpu.read(cpu.regs.PC++) | (cpu.read(cpu.regs.PC++) << 8);
+        uint16_t lo = cpu.read(cpu.regs.PC++);
+        uint16_t hi = cpu.read(cpu.regs.PC++);
+        uint16_t addr = (hi << 8) | lo;
         cpu.regs.MEMPTR = addr;
         if (cpu.check_condition((cpu.current_opcode >> 3) & 7)) {
             cpu.wait(1);
@@ -70,13 +78,17 @@ namespace z80 {
     }
 
     void handle_ret(Z80& cpu) {
-        cpu.regs.PC = cpu.regs.MEMPTR = cpu.read(cpu.regs.SP++) | (cpu.read(cpu.regs.SP++) << 8);
+        uint16_t lo = cpu.read(cpu.regs.SP++);
+        uint16_t hi = cpu.read(cpu.regs.SP++);
+        cpu.regs.PC = cpu.regs.MEMPTR = (hi << 8) | lo;
     }
 
     void handle_ret_cc(Z80& cpu) {
         cpu.wait(1);
         if (cpu.check_condition((cpu.current_opcode >> 3) & 7)) {
-            cpu.regs.PC = cpu.regs.MEMPTR = cpu.read(cpu.regs.SP++) | (cpu.read(cpu.regs.SP++) << 8);
+            uint16_t lo = cpu.read(cpu.regs.SP++);
+            uint16_t hi = cpu.read(cpu.regs.SP++);
+            cpu.regs.PC = cpu.regs.MEMPTR = (hi << 8) | lo;
         }
     }
 

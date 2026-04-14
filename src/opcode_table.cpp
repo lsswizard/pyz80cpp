@@ -746,6 +746,9 @@ void OpcodeTable::init() {
     dd_table[0x5D] = {handle_ld_ixhl_r, 8, 2, false};  // LD E, IXL
     dd_table[0x65] = {handle_ld_ixhl_r, 8, 2, false};  // LD H, IXL
     dd_table[0x6D] = {handle_ld_ixhl_r, 8, 2, false};  // LD L, IXL
+    dd_table[0x7D] = {handle_ld_ixhl_r, 8, 2, false};  // LD A, IXL
+    dd_table[0x7F] = {handle_ld_ixhl_r, 8, 2, false};  // LD IXL, A
+    dd_table[0x7C] = {handle_ld_ixhl_r, 8, 2, false};  // LD A, IXH
     
     fd_table[0x44] = {handle_ld_ixhl_r, 8, 2, false};  // LD B, IYH
     fd_table[0x4C] = {handle_ld_ixhl_r, 8, 2, false};
@@ -759,6 +762,7 @@ void OpcodeTable::init() {
     fd_table[0x5D] = {handle_ld_ixhl_r, 8, 2, false};
     fd_table[0x65] = {handle_ld_ixhl_r, 8, 2, false};
     fd_table[0x6D] = {handle_ld_ixhl_r, 8, 2, false};
+    fd_table[0x7C] = {handle_ld_ixhl_r, 8, 2, false};  // LD A, IYH
 
     // =====================
     // DD/FD IXH/IXL register loads (0x26, 0x2E, 0x60-0x67)
@@ -805,8 +809,8 @@ void OpcodeTable::init() {
         fdcb_table[i] = {handle_ddcb_fdcb_rot, 23, 4, true};
     }
     for (int i = 0; i < 64; i++) {
-        ddcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 43, 4, true};
-        fdcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 43, 4, true};
+        ddcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 20, 4, true};
+        fdcb_table[0x40 + i] = {handle_ddcb_fdcb_bit, 20, 4, true};
     }
     for (int i = 0; i < 48; i++) {
         ddcb_table[0x80 + i] = {handle_ddcb_fdcb_res, 23, 4, true};

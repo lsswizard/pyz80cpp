@@ -2,10 +2,19 @@
 """Quick flags sanity check — run standalone or via pytest."""
 
 import sys
+import os
 
-sys.path.insert(0, "/home/lss/builds/PythonZ80")
+# Add parent to path for core module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cpu import Z80CPU, FLAG_Z, FLAG_N, FLAG_C, FLAG_H, FLAG_PV
+from z80_py import Z80 as Z80CPU
+
+# Z80 Flag constants
+FLAG_Z = 0x40
+FLAG_N = 0x02
+FLAG_C = 0x01
+FLAG_H = 0x10
+FLAG_PV = 0x04
 
 
 def test_dec_c_flags():

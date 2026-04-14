@@ -61,6 +61,62 @@ namespace FlagTables {
 }
 
 // ============================================================
+// Flag Utility Functions (for centralized flag calculations)
+// ============================================================
+
+// 8-bit ADD flags (a + b)
+inline uint8_t calc_add_flags(uint8_t a, uint8_t b, uint16_t result) {
+    return FlagTables::ADD_FLAGS[(a << 8) | b];
+}
+
+// 8-bit ADC flags (a + b + carry)
+inline uint8_t calc_adc_flags(uint8_t a, uint8_t b, uint8_t carry, uint16_t result) {
+    return FlagTables::ADC_FLAGS[(a << 8) | b | (carry << 8)];
+}
+
+// 8-bit SUB flags (a - b)
+inline uint8_t calc_sub_flags(uint8_t a, uint8_t b, uint16_t result) {
+    return FlagTables::SUB_FLAGS[(a << 8) | b];
+}
+
+// 8-bit SBC flags (a - b - carry)
+inline uint8_t calc_sbc_flags(uint8_t a, uint8_t b, uint8_t carry, uint16_t result) {
+    return FlagTables::SBC_FLAGS[(a << 8) | b | (carry << 8)];
+}
+
+// INC flags (increment value)
+inline uint8_t calc_inc_flags(uint8_t old_val, uint8_t new_val) {
+    return FlagTables::INC_FLAGS[old_val];
+}
+
+// DEC flags (decrement value)
+inline uint8_t calc_dec_flags(uint8_t old_val, uint8_t new_val) {
+    return FlagTables::DEC_FLAGS[old_val];
+}
+
+// Logical operation flags (AND, OR, XOR)
+inline uint8_t calc_logic_flags(uint8_t result) {
+    return FlagTables::SZ53P_TABLE[result] | Flags::H;
+}
+
+// Shift/rotate result flags (preserves carry)
+inline uint8_t calc_shift_flags(uint8_t result, uint8_t carry_in, uint8_t carry_out) {
+    uint8_t flags = FlagTables::SZ53P_TABLE[result];
+    if (carry_out) flags |= Flags::C;
+    return flags;
+}
+
+// BIT instruction flags
+inline uint8_t calc_bit_flags(uint8_t value, int bit_pos) {
+    uint8_t result = FlagTables::SZ53_TABLE[value] | Flags::H;
+    if (bit_pos == 2 || bit_pos == 4 || bit_pos == 6) {
+        // PV flag reflects parity for BIT
+        if (FlagTables::PARITY_TABLE[value]) result |= Flags::PV;
+    }
+    return result;
+}
+
+// ============================================================
 // Condition Codes
 // ============================================================
 inline bool check_condition(uint8_t flags, int cc) {

@@ -323,6 +323,7 @@ uint8_t Z80::read_reg8(int reg) {
 }
 
 void Z80::write_reg8(int reg, uint8_t value) {
+    //fprintf(stderr, "DEBUG write_reg8: reg=%d value=0x%02X prefix_ix=%d\n", reg, value, prefix_ix);
     switch (reg) {
         case 0: regs.B = value; break;
         case 1: regs.C = value; break;

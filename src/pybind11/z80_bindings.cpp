@@ -35,9 +35,17 @@ public:
     void contend(uint16_t addr, int cycles) override {
         PYBIND11_OVERRIDE(void, Bus, contend, addr, cycles);
     }
+
+    int get_memory_wait_states(uint16_t addr) override {
+        PYBIND11_OVERRIDE(int, Bus, get_memory_wait_states, addr);
+    }
+
+    int get_io_wait_states(uint16_t port) override {
+        PYBIND11_OVERRIDE(int, Bus, get_io_wait_states, port);
+    }
 };
 
-PYBIND11_MODULE(z80_core, m) {
+PYBIND11_MODULE(z80_py, m) {
     m.doc() = "Z80 CPU Core Python bindings";
 
     // ============================================================
@@ -85,7 +93,10 @@ PYBIND11_MODULE(z80_core, m) {
                 if (s.size() >= 256) {
                     memcpy(self.io_ports, s.data(), 256);
                 }
-            });
+            })
+        // Aliases for I/O port access
+        .def("in_", &SimpleBus::in, "Read from I/O port")
+        .def("out", &SimpleBus::out, "Write to I/O port");
 
     // ============================================================
     // Registers struct
@@ -138,6 +149,7 @@ PYBIND11_MODULE(z80_core, m) {
     // Z80 CPU class
     // ============================================================
     py::class_<Z80>(m, "Z80")
+        .def(py::init<>(), "Create Z80 CPU with default SimpleBus")
         .def(py::init<Bus*>(), "Create Z80 CPU with optional bus")
         .def("reset", &Z80::reset, "Reset the CPU")
         .def("step", &Z80::step, "Execute one instruction, returns T-states")
@@ -172,12 +184,17 @@ PYBIND11_MODULE(z80_core, m) {
         .def_property("registers", 
             [](Z80& self) -> Registers& { return self.regs; },
             [](Z80& self, Registers& r) { self.regs = r; })
+        .def_property("regs", 
+            [](Z80& self) -> Registers& { return self.regs; },
+            [](Z80& self, Registers& r) { self.regs = r; })
         .def("get_registers", (Registers& (Z80::*)()) &Z80::get_registers, "Get register state")
         
         // Memory/IO access
         .def("set_bus", &Z80::set_bus, "Set bus interface")
         .def("read_memory", [](Z80& self, uint16_t addr) { return self.read(addr); }, "Read memory")
         .def("write_memory", [](Z80& self, uint16_t addr, uint8_t val) { self.write(addr, val); }, "Write memory")
+        .def("write_byte", [](Z80& self, uint16_t addr, uint8_t val) { self.write(addr, val); }, "Write byte to memory")
+        .def("read_byte", [](Z80& self, uint16_t addr) { return self.read(addr); }, "Read byte from memory")
         .def("in_port", [](Z80& self, uint16_t port) { return self.in(port); }, "Read from I/O port")
         .def("out_port", [](Z80& self, uint16_t port, uint8_t val) { self.out(port, val); }, "Write to I/O port")
         

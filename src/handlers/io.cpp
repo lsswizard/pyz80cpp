@@ -182,6 +182,7 @@ namespace z80 {
         uint16_t addr = ((cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY) + cpu.ddcb_displacement) & 0xFFFF;
         cpu.regs.MEMPTR = addr;
         uint8_t val = cpu.read(addr);
+        cpu.wait(3);  // Additional processing time for BIT
         uint8_t result = val & (1 << ((cpu.ddcb_opcode >> 3) & 7));
         cpu.regs.F = (cpu.regs.F & Flags::C) | Flags::H | (result == 0 ? Flags::Z | Flags::PV : 0) | (result & Flags::S) | ((addr >> 8) & (Flags::F5 | Flags::F3));
     }

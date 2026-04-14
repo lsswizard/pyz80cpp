@@ -107,29 +107,33 @@ public:
         return read(regs.PC++);
     }
 
-    // Memory read (3 T-states)
+    // Memory read (3 T-states + wait states)
     inline uint8_t read(uint16_t addr) {
-        add_cycles(3);
+        int wait_states = bus_ptr->get_memory_wait_states(addr);
+        add_cycles(3 + wait_states);
         bus_ptr->contend(addr, 3);
         return bus_ptr->read(addr);
     }
 
-    // Memory write (3 T-states)
+    // Memory write (3 T-states + wait states)
     inline void write(uint16_t addr, uint8_t value) {
-        add_cycles(3);
+        int wait_states = bus_ptr->get_memory_wait_states(addr);
+        add_cycles(3 + wait_states);
         bus_ptr->contend(addr, 3);
         bus_ptr->write(addr, value);
     }
 
-    // I/O read (4 T-states, with contention)
+    // I/O read (4 T-states + wait states)
     inline uint8_t in(uint16_t port) {
-        add_cycles(4);
+        int wait_states = bus_ptr->get_io_wait_states(port);
+        add_cycles(4 + wait_states);
         return bus_ptr->in(port);
     }
 
-    // I/O write (4 T-states, with contention)
+    // I/O write (4 T-states + wait states)
     inline void out(uint16_t port, uint8_t value) {
-        add_cycles(4);
+        int wait_states = bus_ptr->get_io_wait_states(port);
+        add_cycles(4 + wait_states);
         bus_ptr->out(port, value);
     }
 

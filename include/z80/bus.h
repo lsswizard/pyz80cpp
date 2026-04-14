@@ -49,6 +49,18 @@ public:
         return 0xFF;  // Default: return NOP vector
     }
 
+    // Wait state configuration (for accurate timing)
+    // Returns additional wait states for memory/I/O access
+    virtual int get_memory_wait_states(uint16_t addr) {
+        (void)addr;
+        return 0;  // Default: no wait states
+    }
+    
+    virtual int get_io_wait_states(uint16_t port) {
+        (void)port;
+        return 0;  // Default: no wait states
+    }
+
     // Optional: debug info
     virtual std::string debug_info() const { return ""; }
 };

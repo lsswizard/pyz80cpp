@@ -6,17 +6,17 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import (
-    Z80CPU,
-    FLAG_S,
-    FLAG_Z,
-    FLAG_H,
-    FLAG_PV,
-    FLAG_N,
-    FLAG_C,
-    FLAG_F5,
-    FLAG_F3,
-)
+from z80_py import Z80 as Z80CPU
+
+# Z80 Flag constants
+FLAG_S = 0x80
+FLAG_Z = 0x40
+FLAG_F5 = 0x20
+FLAG_H = 0x10
+FLAG_F3 = 0x08
+FLAG_PV = 0x04
+FLAG_N = 0x02
+FLAG_C = 0x01
 
 _F53 = FLAG_F5 | FLAG_F3
 
@@ -35,16 +35,6 @@ def write_program(cpu, program_bytes, addr=0):
     for i, b in enumerate(program_bytes):
         cpu.write_byte(addr + i, b)
     cpu.regs.PC = addr
-
-
-def flag_set(cpu, flag):
-    """Check if a flag is set."""
-    return bool(cpu.regs.F & flag)
-
-
-def flag_clear(cpu, flag):
-    """Check if a flag is clear."""
-    return not (cpu.regs.F & flag)
 
 
 def run_cb_instruction(cpu, cb_op):
@@ -104,3 +94,13 @@ def _sub_flags(a, b):
 def _parity(val):
     """Return True if val has even parity."""
     return bin(val).count("1") % 2 == 0
+
+
+def flag_set(cpu, flag):
+    """Check if a flag is set."""
+    return bool(cpu.regs.F & flag)
+
+
+def flag_clear(cpu, flag):
+    """Check if a flag is clear."""
+    return not (cpu.regs.F & flag)

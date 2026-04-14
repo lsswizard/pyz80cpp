@@ -17,6 +17,32 @@ option(BUILD_SHARED_LIBS "Build as shared library" ON)
 option(BUILD_TESTS "Build test suite" OFF)
 option(ENABLE_PYBIND11 "Enable pybind11 bindings" OFF)
 
+# Build type: Debug, Release, Trace, Test
+set(BUILD_MODE "Release" CACHE STRING "Build mode: Debug, Release, Trace, Test")
+
+# ============================================================
+# Build mode configurations
+# ============================================================
+set_property(CACHE BUILD_MODE PROPERTY STRINGS "Debug" "Release" "Trace" "Test")
+
+if(BUILD_MODE STREQUAL "Debug")
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "" FORCE)
+    add_compile_definitions(Z80_DEBUG=1)
+    message(STATUS "Debug mode: Extra validation enabled")
+elseif(BUILD_MODE STREQUAL "Release")
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+    add_compile_definitions(Z80_RELEASE=1)
+    message(STATUS "Release mode: Optimizations enabled")
+elseif(BUILD_MODE STREQUAL "Trace")
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "" FORCE)
+    add_compile_definitions(Z80_TRACE=1)
+    message(STATUS "Trace mode: Instruction logging enabled")
+elseif(BUILD_MODE STREQUAL "Test")
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "" FORCE)
+    add_compile_definitions(Z80_TEST=1)
+    message(STATUS "Test mode: Additional sanity checks enabled")
+endif()
+
 # ============================================================
 # Warning flags
 # ============================================================
@@ -39,6 +65,7 @@ endif()
 set(Z80_SOURCES
     src/z80.cpp
     src/opcode_table.cpp
+    src/flags.cpp
     src/handlers/load.cpp
     src/handlers/block.cpp
     src/handlers/alu.cpp
@@ -92,7 +119,7 @@ if(ENABLE_PYBIND11)
     target_link_libraries(z80_py PRIVATE z80_core)
     target_include_directories(z80_py PRIVATE ${PYTHON_INCLUDE_DIRS})
     
-    install(TARGETS z80_python DESTINATION ${CMAKE_INSTALL_PREFIX})
+    install(TARGETS z80_py DESTINATION ${CMAKE_INSTALL_PREFIX})
 endif()
 
 # ============================================================
