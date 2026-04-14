@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, ".")
 
-from core import Z80CPU
+from z80_py import Z80 as Z80CPU
 
 
 def create_program(cpu, program: list[int], start: int = 0) -> None:
@@ -23,11 +23,11 @@ def bench_step(program, cycles_target=100_000, label=""):
     cpu.reset()
 
     start = time.perf_counter()
-    while cpu.cycles < cycles_target:
+    while cpu.get_cycles() < cycles_target:
         cpu.step()
     elapsed = time.perf_counter() - start
 
-    instrs = cpu.instruction_count
+    instrs = cpu.get_instruction_count()
     ips = instrs / elapsed
     mips = ips / 1_000_000
     real_35 = ips / 875_000  # real Z80 @ 3.5MHz ~875K instr/sec
@@ -48,7 +48,7 @@ def bench_run(program, cycles_target=1_000_000, label=""):
         c = cpu.run(100_000)
         total += c
         runs += 1
-        if cpu.halted:
+        if cpu.is_halted():
             cpu.reset()
     elapsed = time.perf_counter() - start
 
@@ -148,7 +148,7 @@ def main():
     while total < 10_000_000:
         c = cpu.run(100_000)
         total += c
-        if cpu.halted:
+        if cpu.is_halted():
             cpu.reset()
     elapsed = time.perf_counter() - start
     mips = total / elapsed / 1_000_000
@@ -161,7 +161,7 @@ def main():
     while total < 100_000_000:
         c = cpu.run(1_000_000)
         total += c
-        if cpu.halted:
+        if cpu.is_halted():
             cpu.reset()
     elapsed = time.perf_counter() - start
     mips = total / elapsed / 1_000_000
