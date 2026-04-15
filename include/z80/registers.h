@@ -39,7 +39,6 @@ struct Registers {
     // State flags for EI/DI
     bool EI_PENDING;       // EI instruction executed
     bool EI_JUST_RESOLVED; // EI just completed (one instruction delay)
-    bool UNRESOLVED_PREFIX; // DD or FD prefix not resolved
 
     // Memory pointer (used for certain instructions)
     uint16_t MEMPTR;
@@ -113,7 +112,7 @@ struct Registers {
         I = R = 0;
         IFF1 = IFF2 = false;
         IM = 0;
-        EI_PENDING = EI_JUST_RESOLVED = UNRESOLVED_PREFIX = false;
+        EI_PENDING = EI_JUST_RESOLVED = false;
         MEMPTR = 0;
         Q = LAST_Q = 0;
     }

@@ -9,19 +9,6 @@
 namespace z80 {
 
 // ============================================================
-// Prefix state for decoder
-// ============================================================
-enum class PrefixState {
-    NONE,   // No prefix
-    CB,     // CB prefix
-    ED,     // ED prefix
-    DD,     // IX prefix
-    FD,     // IY prefix
-    DDCB,   // DD CB prefix
-    FDCB    // FD CB prefix
-};
-
-// ============================================================
 // Instruction execute function signature
 // ============================================================
 class Z80;
@@ -181,7 +168,6 @@ public:
     bool interrupt_pending;
     bool nmi_pending;
     uint8_t interrupt_data;
-    PrefixState prefix_state;
     // DDCB/FDCB pre-fetched values (to avoid double-read)
     int8_t ddcb_displacement;
     uint8_t ddcb_opcode;

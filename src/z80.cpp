@@ -1,6 +1,5 @@
 #include "../include/z80/z80.h"
 #include "../include/z80/opcode_table.h"
-#include "../include/z80/decoder.h"
 #include <cstring>
 #include <algorithm>
 
@@ -54,8 +53,6 @@ void Z80::reset() {
     interrupt_data = 0;
     current_opcode = 0;
     prefix_ix = false;
-    // NOTE: prefix_state removed - was declared in reset() but never read
-    // during execution. If re-added, ensure it is actually used.
 }
 
 // ============================================================
