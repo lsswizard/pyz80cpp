@@ -80,7 +80,6 @@ set(Z80_HEADERS
     include/z80/registers.h
     include/z80/flags.h
     include/z80/opcode_table.h
-    include/z80/decoder.h
     include/z80/timing.h
     include/z80/handlers.h
 )
