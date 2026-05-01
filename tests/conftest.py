@@ -36,8 +36,16 @@ def _get_bus():
 @pytest.fixture(scope="function")
 def cpu():
     """Fresh Z80CPU instance for each test."""
+    # Clear bus memory before each test to avoid stale data
+    bus = _get_bus()
+    # Reset bus memory to 0
+    for i in range(65536):
+        bus.write(i, 0)
+    for i in range(256):
+        bus.out_(i, 0)
+    
     c = Z80CPU()
-    c.bus = _get_bus()
+    c.bus = bus
     c.registers.F = 0
     c.registers.A = 0
     return c

@@ -35,15 +35,15 @@ namespace z80 {
     // ============================================================
 
     void handle_in_a_n(Z80& cpu) {
-        uint16_t full_port = (cpu.regs.A << 8) | cpu.read(cpu.regs.PC++);
-        cpu.regs.A = cpu.in(full_port);
-        cpu.regs.MEMPTR = (full_port + 1) & 0xFFFF;
+        uint8_t port = cpu.read(cpu.regs.PC++);
+        cpu.regs.A = cpu.in(port);
+        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;
     }
 
-    void handle_out_n_a(Z80& cpu) {
-        uint16_t full_port = (cpu.regs.A << 8) | cpu.read(cpu.regs.PC++);
-        cpu.out(full_port, cpu.regs.A);
-        cpu.regs.MEMPTR = ((full_port + 1) & 0xFF) | (cpu.regs.A << 8);
+void handle_out_n_a(Z80& cpu) {
+        uint8_t port = cpu.read(cpu.regs.PC++);
+        cpu.out(port, cpu.regs.A);
+        cpu.regs.MEMPTR = ((port + 1) & 0xFF) | (cpu.regs.A << 8);
     }
 
     void handle_in_r_c(Z80& cpu) {
