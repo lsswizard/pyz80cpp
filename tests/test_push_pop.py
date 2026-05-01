@@ -18,27 +18,27 @@ class TestPushPop:
     )
     def test_push_pop_round_trip(self, cpu, pair, push_op, pop_op):
         """PUSH rr / POP rr — round-trip preserves value and SP."""
-        cpu.regs.SP = 0x2000
-        setattr(cpu.regs, pair, 0xDEAD)
+        cpu.registers.SP = 0x2000
+        setattr(cpu.registers, pair, 0xDEAD)
         write_program(cpu, [push_op, pop_op])
         cpu.step()
-        setattr(cpu.regs, pair, 0x0000)
+        setattr(cpu.registers, pair, 0x0000)
         cpu.step()
-        assert getattr(cpu.regs, pair) == 0xDEAD
-        assert cpu.regs.SP == 0x2000
+        assert getattr(cpu.registers, pair) == 0xDEAD
+        assert cpu.registers.SP == 0x2000
 
     def test_push_decrements_sp(self, cpu):
         """PUSH decrements SP by 2."""
-        cpu.regs.SP = 0xFFFF
-        cpu.regs.BC = 0xDEAD
+        cpu.registers.SP = 0xFFFF
+        cpu.registers.BC = 0xDEAD
         write_program(cpu, [0xC5])
         cpu.step()
-        assert cpu.regs.SP == 0xFFFD
+        assert cpu.registers.SP == 0xFFFD
 
     def test_push_stores_value(self, cpu):
         """PUSH stores high byte at SP+1, low byte at SP."""
-        cpu.regs.SP = 0xFFFF
-        cpu.regs.BC = 0xDEAD
+        cpu.registers.SP = 0xFFFF
+        cpu.registers.BC = 0xDEAD
         write_program(cpu, [0xC5])
         cpu.step()
         assert cpu.read_byte(0xFFFE) == 0xDE
@@ -46,31 +46,31 @@ class TestPushPop:
 
     def test_push_pop_af(self, cpu):
         """PUSH AF / POP AF — preserves accumulator and flags."""
-        cpu.regs.A = 0xFF
-        cpu.regs.F = 0xD7
-        cpu.regs.SP = 0xFFFF
+        cpu.registers.A = 0xFF
+        cpu.registers.F = 0xD7
+        cpu.registers.SP = 0xFFFF
         write_program(cpu, [0xF5, 0xF1])
         cpu.step()
-        cpu.regs.A = 0x00
-        cpu.regs.F = 0x00
+        cpu.registers.A = 0x00
+        cpu.registers.F = 0x00
         cpu.step()
-        assert cpu.regs.A == 0xFF
+        assert cpu.registers.A == 0xFF
 
     def test_nested_push_pop(self, cpu):
         """Nested PUSH/POP preserves all values (LIFO order)."""
-        cpu.regs.SP = 0x2000
-        cpu.regs.BC = 0xAAAA
-        cpu.regs.DE = 0xBBBB
+        cpu.registers.SP = 0x2000
+        cpu.registers.BC = 0xAAAA
+        cpu.registers.DE = 0xBBBB
         write_program(cpu, [0xC5, 0xD5, 0xD1, 0xC1])
         step_n(cpu, 4)
-        assert cpu.regs.BC == 0xAAAA
-        assert cpu.regs.DE == 0xBBBB
+        assert cpu.registers.BC == 0xAAAA
+        assert cpu.registers.DE == 0xBBBB
 
     def test_push_pop_cross(self, cpu):
         """PUSH BC / POP DE — transfer value between pairs."""
-        cpu.regs.SP = 0x2000
-        cpu.regs.BC = 0x1234
-        cpu.regs.DE = 0x0000
+        cpu.registers.SP = 0x2000
+        cpu.registers.BC = 0x1234
+        cpu.registers.DE = 0x0000
         write_program(cpu, [0xC5, 0xD1])
         step_n(cpu, 2)
-        assert cpu.regs.DE == 0x1234
+        assert cpu.registers.DE == 0x1234

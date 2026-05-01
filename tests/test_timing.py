@@ -275,25 +275,25 @@ class TestTiming:
     )
     def test_instruction_timing(self, cpu, name, code, cycles, setup):
         if setup == "IX":
-            cpu.regs.IX = 0x1000
+            cpu.registers.IX = 0x1000
             addr = 0x1010
             cpu.write_byte(addr, 0x00)
         elif setup == "IY":
-            cpu.regs.IY = 0x1000
+            cpu.registers.IY = 0x1000
             addr = 0x1010
             cpu.write_byte(addr, 0x00)
         elif setup == "B=2":
-            cpu.regs.B = 2
+            cpu.registers.B = 2
         elif setup == "B=1":
-            cpu.regs.B = 1
+            cpu.registers.B = 1
         elif setup == "FLAG_Z":
-            cpu.regs.F = 0x40
+            cpu.registers.F = 0x40
         elif setup == "FLAG_C":
-            cpu.regs.F = 0x01
+            cpu.registers.F = 0x01
 
         for i, b in enumerate(code):
             cpu.write_byte(i, b)
-        cpu.regs.PC = 0
+        cpu.registers.PC = 0
 
         actual_cycles = cpu.step()
 

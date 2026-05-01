@@ -14,7 +14,7 @@ void handle_add_a(Z80& cpu) {
     uint16_t res = a + val;
     cpu.regs.A = res & 0xFF;
     // Use centralized flag calculation
-    cpu.regs.F = calc_add_flags(a, val, res);
+    cpu.regs.F = calc_add_flags(a, val);
     cpu.regs.Q = cpu.regs.F;
 }
 
@@ -37,7 +37,7 @@ void handle_sub(Z80& cpu) {
     uint16_t res   = a - val;
     cpu.regs.A     = res & 0xFF;
     // Use centralized flag calculation
-    cpu.regs.F     = calc_sub_flags(a, val, res);
+    cpu.regs.F     = calc_sub_flags(a, val);
     cpu.regs.Q = cpu.regs.F;
 }
 
@@ -57,27 +57,30 @@ void handle_and(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
     uint8_t val    = cpu.read_reg8(opcode & 7);
     cpu.regs.A    &= val;
-    cpu.regs.F     = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
+    cpu.regs.Q     = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
                      (cpu.regs.A == 0 ? Flags::Z : 0) | Flags::H |
                      (FlagTables::PARITY_TABLE[cpu.regs.A] ? Flags::PV : 0);
+    cpu.regs.F = cpu.regs.Q;
 }
 
 void handle_or(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
     uint8_t val    = cpu.read_reg8(opcode & 7);
     cpu.regs.A    |= val;
-    cpu.regs.F     = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
+    cpu.regs.Q     = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
                      (cpu.regs.A == 0 ? Flags::Z : 0) |
                      (FlagTables::PARITY_TABLE[cpu.regs.A] ? Flags::PV : 0);
+    cpu.regs.F = cpu.regs.Q;
 }
 
 void handle_xor(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
     uint8_t val    = cpu.read_reg8(opcode & 7);
     cpu.regs.A    ^= val;
-    cpu.regs.F     = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
+    cpu.regs.Q     = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
                      (cpu.regs.A == 0 ? Flags::Z : 0) |
                      (FlagTables::PARITY_TABLE[cpu.regs.A] ? Flags::PV : 0);
+    cpu.regs.F = cpu.regs.Q;
 }
 
 void handle_cp(Z80& cpu) {
@@ -204,7 +207,7 @@ void handle_inc_r(Z80& cpu) {
     cpu.write_reg8(reg, res);
     
     // Use centralized flag calculation (preserves carry)
-    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_inc_flags(val, res);
+    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_inc_flags(val);
     cpu.regs.Q = cpu.regs.F;
 }
 
@@ -216,7 +219,7 @@ void handle_dec_r(Z80& cpu) {
     cpu.write_reg8(reg, res);
     
     // Use centralized flag calculation (preserves carry, sets N)
-    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_dec_flags(val, res);
+    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_dec_flags(val);
     cpu.regs.Q = cpu.regs.F;
 }
 
@@ -227,7 +230,7 @@ void handle_inc_hl(Z80& cpu) {
     cpu.write(cpu.regs.HL(), res);
     
     // Use centralized flag calculation (preserves carry)
-    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_inc_flags(val, res);
+    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_inc_flags(val);
     cpu.regs.Q = cpu.regs.F;
 }
 
@@ -238,7 +241,7 @@ void handle_dec_hl(Z80& cpu) {
     cpu.write(cpu.regs.HL(), res);
     
     // Use centralized flag calculation (preserves carry, sets N)
-    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_dec_flags(val, res);
+    cpu.regs.F = (cpu.regs.F & Flags::C) | calc_dec_flags(val);
     cpu.regs.Q = cpu.regs.F;
 }
 
@@ -260,7 +263,6 @@ void handle_add_hl_rr(Z80& cpu) {
                  ((result >> 8) & (Flags::F5 | Flags::F3)) | h |
                  (result > 0xFFFF ? Flags::C : 0);
     cpu.regs.set_HL(result & 0xFFFF);
-    cpu.regs.MEMPTR = hl + 1;
 }
 
 void handle_inc_rr(Z80& cpu) {
@@ -290,55 +292,71 @@ void handle_daa(Z80& cpu) {
     uint8_t f = cpu.regs.F;
     uint8_t correction = 0;
     uint8_t new_c = f & Flags::C;
-    uint8_t h = f & Flags::H;
+    uint8_t h = 0;
 
-    if ((a & 0x0F) > 9 || (f & Flags::H)) {
+    if ((f & Flags::H) || ((a & 0x0F) > 9)) {
         correction |= 0x06;
     }
-    if (a > 0x99 || (f & Flags::C)) {
+    
+    if ((f & Flags::C) || (a > 0x99)) {
         correction |= 0x60;
         new_c = Flags::C;
     }
 
     if (f & Flags::N) {
-        cpu.regs.A -= correction;
+        if ((f & Flags::H) && (a & 0x0F) < 6) h = Flags::H;
+        a -= correction;
     } else {
-        cpu.regs.A += correction;
+        if ((a & 0x0F) > 9) h = Flags::H;
+        a += correction;
     }
 
-    uint8_t res = cpu.regs.A;
-    cpu.regs.F = (res & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (res == 0 ? Flags::Z : 0) |
-                 ((f & Flags::N) ? ((h && (correction & 0x06) < 6) ? Flags::H : 0) : ((a & 0x0F) > 9 ? Flags::H : 0)) |
-                 (FlagTables::PARITY_TABLE[res] ? Flags::PV : 0) |
+    cpu.regs.A = a;
+    cpu.regs.F = (a & (Flags::S | Flags::F5 | Flags::F3)) |
+                 (a == 0 ? Flags::Z : 0) | h |
+                 (FlagTables::PARITY_TABLE[a] ? Flags::PV : 0) |
                  (f & Flags::N) | new_c;
+    cpu.regs.Q = cpu.regs.F;
 }
 
 void handle_cpl(Z80& cpu) {
     cpu.regs.A = ~cpu.regs.A;
-    cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV | Flags::C)) |
+    cpu.regs.Q = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV | Flags::C)) |
                  (cpu.regs.A & (Flags::F5 | Flags::F3)) | Flags::N | Flags::H;
+    cpu.regs.F = cpu.regs.Q;
 }
 
-void handle_ccf(Z80& cpu) {
-    uint8_t old_c = cpu.regs.F & Flags::C;
-    uint8_t q_xor_f = cpu.regs.Q ^ cpu.regs.F;
-    cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) |
-                 (q_xor_f | cpu.regs.A) & (Flags::F5 | Flags::F3) |
-                 (old_c ? Flags::H : 0) |
-                 (old_c ? 0 : Flags::C);
-    // CCF sets Q = 0 (it's a non-flag-modifying instruction)
-    cpu.regs.Q = 0;
-}
+    void handle_ccf(Z80& cpu) {
+        uint8_t old_c = cpu.regs.F & Flags::C;
+        // CCF: F3 = previous carry flag, F5 = A.5
+        uint8_t f5_f3 = Flags::F5 & cpu.regs.A;  // F5 = A.5
+        f5_f3 |= (old_c ? Flags::F3 : 0);  // F3 = previous carry
+        
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) |
+                     f5_f3 |
+                     (old_c ? Flags::H : 0) |
+                     (old_c ? 0 : Flags::C);
+        // CCF sets Q = 0 (it's a non-flag-modifying instruction)
+        cpu.regs.Q = 0;
+    }
 
-void handle_scf(Z80& cpu) {
-    uint8_t q_xor_f = cpu.regs.Q ^ cpu.regs.F;
-    cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) |
-                 (q_xor_f | cpu.regs.A) & (Flags::F5 | Flags::F3) |
-                 Flags::C;
-    // SCF sets Q = 0 (it's a non-flag-modifying instruction)
-    cpu.regs.Q = 0;
-}
+    void handle_scf(Z80& cpu) {
+        // SCF: F5 = A.5, F3 = A.3 if previous instruction modified flags (Q != 0)
+        //      Otherwise: F5 = YF (old F5), F3 = XF (old F3)
+        uint8_t f5_f3;
+        if (cpu.regs.Q) {
+            // Previous instruction modified flags: use A.5, A.3
+            f5_f3 = cpu.regs.A & (Flags::F5 | Flags::F3);
+        } else {
+            // Previous instruction did NOT modify flags: preserve old F5/F3
+            f5_f3 = cpu.regs.F & (Flags::F5 | Flags::F3);
+        }
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) |
+                     f5_f3 |
+                     Flags::C;
+        // SCF sets Q = 0 (it's a non-flag-modifying instruction)
+        cpu.regs.Q = 0;
+    }
 
 void handle_nop(Z80& cpu) { 
     // NOP is a non-flag-modifying instruction, so Q = 0
@@ -348,17 +366,6 @@ void handle_nop(Z80& cpu) {
 void handle_halt(Z80& cpu) {
     cpu.halted = true;
     cpu.regs.PC = (cpu.regs.PC - 1) & 0xFFFF;
-}
-
-void handle_di(Z80& cpu) {
-    cpu.regs.IFF1 = cpu.regs.IFF2 = false;
-    cpu.regs.EI_PENDING = false;
-    cpu.regs.EI_JUST_RESOLVED = false;
-}
-
-void handle_ei(Z80& cpu) {
-    cpu.regs.EI_PENDING = true;
-    cpu.regs.EI_JUST_RESOLVED = false;
 }
 
 void handle_adc_hl_rr(Z80& cpu) {
@@ -382,7 +389,6 @@ void handle_adc_hl_rr(Z80& cpu) {
                  ((result & 0xFFFF) == 0 ? Flags::Z : 0) | h | pv |
                  (result > 0xFFFF ? Flags::C : 0);
     cpu.regs.set_HL(result & 0xFFFF);
-    cpu.regs.MEMPTR = hl + 1;
 }
 
 void handle_sbc_hl_rr(Z80& cpu) {
@@ -407,7 +413,6 @@ void handle_sbc_hl_rr(Z80& cpu) {
                  ((result & 0xFFFF) == 0 ? Flags::Z : 0) | h | pv |
                  (result > 0xFFFF ? Flags::C : 0);
     cpu.regs.set_HL(result & 0xFFFF);
-    cpu.regs.MEMPTR = hl + 1;
 }
 
 void handle_rld(Z80& cpu) {
@@ -443,32 +448,12 @@ void handle_neg(Z80& cpu) {
     uint16_t res = 0 - a;
     uint8_t r = res & 0xFF;
     cpu.regs.A = r;
-    cpu.regs.F = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
+    cpu.regs.Q = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
                  (r == 0 ? Flags::Z : 0) |
                  ((0 & 0x0F) < (a & 0x0F) ? Flags::H : 0) |
                  (a == 0x80 ? Flags::PV : 0) |
                  (a != 0 ? Flags::C : 0);
-}
-
-void handle_reti(Z80& cpu) {
-    cpu.regs.IFF1 = cpu.regs.IFF2;
-    uint16_t lo = cpu.read(cpu.regs.SP++);
-    uint16_t hi = cpu.read(cpu.regs.SP++);
-    cpu.regs.PC = (hi << 8) | lo;
-    cpu.regs.MEMPTR = cpu.regs.PC;
-}
-
-void handle_retn(Z80& cpu) {
-    cpu.regs.IFF1 = cpu.regs.IFF2;
-    uint16_t lo = cpu.read(cpu.regs.SP++);
-    uint16_t hi = cpu.read(cpu.regs.SP++);
-    cpu.regs.PC = (hi << 8) | lo;
-    cpu.regs.MEMPTR = cpu.regs.PC;
-}
-
-void handle_im(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    cpu.regs.IM = (opcode == 0x56) ? 1 : ((opcode == 0x5E) ? 2 : 0);
+    cpu.regs.F = cpu.regs.Q;
 }
 
 void handle_ld_a_i(Z80& cpu) {
@@ -545,6 +530,23 @@ void handle_dd_fd_add_a_ixhl(Z80& cpu) {
                  (res > 0xFF ? Flags::C : 0);
 }
 
+// ADC A, IXH/IXL (DD prefix) - includes carry
+void handle_dd_fd_adc_ixhl(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    int reg = (opcode == 0x8C) ? 8 : 9;  // 0x8C=ADC A,IXH, 0x8D=ADC A,IXL
+    uint8_t val = cpu.read_reg8(reg);
+    uint8_t a = cpu.regs.A;
+    uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
+    uint16_t res = a + val + carry;
+    uint8_t r = res & 0xFF;
+    uint8_t h = ((a & 0x0F) + (val & 0x0F) + carry) > 0x0F ? Flags::H : 0;
+    uint8_t pv = (~(a ^ val) & (a ^ r) & 0x80) ? Flags::PV : 0;
+    cpu.regs.A = r;
+    cpu.regs.F = (r & (Flags::S | Flags::F5 | Flags::F3)) |
+                 (r == 0 ? Flags::Z : 0) | h | pv |
+                 (res > 0xFF ? Flags::C : 0);
+}
+
 // SUB A, IXH/IXL
 void handle_dd_fd_sub_ixhl(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
@@ -559,6 +561,23 @@ void handle_dd_fd_sub_ixhl(Z80& cpu) {
     cpu.regs.F = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
                  (r == 0 ? Flags::Z : 0) | h | pv |
                  (val > a ? Flags::C : 0);
+}
+
+// SBC A, IXH/IXL (DD prefix) - includes carry
+void handle_dd_fd_sbc_ixhl(Z80& cpu) {
+    uint8_t opcode = cpu.current_opcode;
+    int reg = (opcode == 0x9C) ? 8 : 9;  // 0x9C=SBC A,IXH, 0x9D=SBC A,IXL
+    uint8_t val = cpu.read_reg8(reg);
+    uint8_t a = cpu.regs.A;
+    uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
+    uint16_t res = a - val - carry;
+    uint8_t r = res & 0xFF;
+    uint8_t h = (a & 0x0F) < ((val & 0x0F) + carry) ? Flags::H : 0;
+    uint8_t pv = (a ^ val) & (a ^ r) & 0x80 ? Flags::PV : 0;
+    cpu.regs.A = r;
+    cpu.regs.F = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
+                 (r == 0 ? Flags::Z : 0) | h | pv |
+                 (val + carry > a ? Flags::C : 0);
 }
 
 // AND A, IXH/IXL  
@@ -785,7 +804,6 @@ void handle_dd_fd_inc_ixhl(Z80& cpu) {
     // opcode: 0x24 = INC IXH, 0x2C = INC IXL
     int reg = (opcode == 0x24) ? 8 : 9;  // 8=IXH, 9=IXL
     uint8_t val = cpu.read_reg8(reg);
-    cpu.wait(1);
     uint8_t res = (val + 1) & 0xFF;
     cpu.write_reg8(reg, res);
     // Set flags
@@ -803,7 +821,6 @@ void handle_dd_fd_dec_ixhl(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
     int reg = (opcode == 0x25) ? 8 : 9;  // 0x25=DEC IXH, 0x2D=DEC IXL
     uint8_t val = cpu.read_reg8(reg);
-    cpu.wait(1);
     uint8_t res = (val - 1) & 0xFF;
     cpu.write_reg8(reg, res);
     // Set flags

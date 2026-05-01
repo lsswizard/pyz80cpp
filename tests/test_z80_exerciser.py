@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Try to import z80c++ core
 try:
-    from z80_py import Z80 as Z80CPU
+    from z80_core import Z80 as Z80CPU
 except ImportError:
     print("Error: z80c++ core not found. Run 'python -m pytest' from project root.")
     sys.exit(1)
@@ -169,9 +169,9 @@ class Z80TestHarness:
         self.cpu.write_byte(0x0100, 0xC9)  # RET
 
         # Initialize registers
-        self.cpu.regs.PC = 0x0100
-        self.cpu.regs.SP = 0xFFFE
-        self.cpu.regs.I = 0x3F
+        self.cpu.registers.PC = 0x0100
+        self.cpu.registers.SP = 0xFFFE
+        self.cpu.registers.I = 0x3F
 
         # Push program exit address (0x0000 - when popped, PC=0 and we exit)
         self.cpu.write_byte(0xFFFE, 0x00)
@@ -182,18 +182,18 @@ class Z80TestHarness:
 
         def pop_stack():
             """Pop 2 bytes from stack."""
-            lo = self.cpu.read_byte(self.cpu.regs.SP)
-            self.cpu.regs.SP = (self.cpu.regs.SP + 1) & 0xFFFF
-            hi = self.cpu.read_byte(self.cpu.regs.SP)
-            self.cpu.regs.SP = (self.cpu.regs.SP + 1) & 0xFFFF
+            lo = self.cpu.read_byte(self.cpu.registers.SP)
+            self.cpu.registers.SP = (self.cpu.registers.SP + 1) & 0xFFFF
+            hi = self.cpu.read_byte(self.cpu.registers.SP)
+            self.cpu.registers.SP = (self.cpu.registers.SP + 1) & 0xFFFF
             return (hi << 8) | lo
 
         def push_stack(value):
             """Push 2 bytes onto stack."""
-            self.cpu.regs.SP = (self.cpu.regs.SP - 1) & 0xFFFF
-            self.cpu.write_byte(self.cpu.regs.SP, (value >> 8) & 0xFF)
-            self.cpu.regs.SP = (self.cpu.regs.SP - 1) & 0xFFFF
-            self.cpu.write_byte(self.cpu.regs.SP, value & 0xFF)
+            self.cpu.registers.SP = (self.cpu.registers.SP - 1) & 0xFFFF
+            self.cpu.write_byte(self.cpu.registers.SP, (value >> 8) & 0xFF)
+            self.cpu.registers.SP = (self.cpu.registers.SP - 1) & 0xFFFF
+            self.cpu.write_byte(self.cpu.registers.SP, value & 0xFF)
 
         # Track state
         prev_pc = 0x0100
@@ -211,7 +211,7 @@ class Z80TestHarness:
             t = self.cpu.step()
             cycles += t
 
-            pc = self.cpu.regs.PC
+            pc = self.cpu.registers.PC
 
             if self.cpu.halted:
                 completed = True
@@ -225,10 +225,10 @@ class Z80TestHarness:
                 # Return address is on stack (after the JP, program will RET to here)
                 bdos_return_addr = pop_stack()
                 # Handle BDOS function
-                c = self.cpu.regs.C
+                c = self.cpu.registers.C
 
                 if c == 2:  # BDOS function 2: print char (E = char)
-                    char = self.cpu.regs.E
+                    char = self.cpu.registers.E
                     if char == 0x0A:  # LF
                         lines += 1
                         if cursor_x > columns:
@@ -243,7 +243,7 @@ class Z80TestHarness:
                 elif (
                     c == 9
                 ):  # BDOS function 9: print string (DE = string addr, $ terminated)
-                    de = self.cpu.regs.DE
+                    de = self.cpu.registers.DE
                     while self.read_mem(de) != 0x24:  # $ terminator
                         char = self.read_mem(de)
                         if char == 0x0A:  # LF
@@ -268,7 +268,7 @@ class Z80TestHarness:
                 # The next step will RET to the caller
                 in_bdos = False
                 # Reset PC to 0x0100 so CPU can continue from our hook
-                self.cpu.regs.PC = 0x0100
+                self.cpu.registers.PC = 0x0100
                 # Skip the step that would execute the RET by adjusting cycle count
                 # Actually we'll just let it execute naturally
 
@@ -286,10 +286,10 @@ class Z80TestHarness:
 
     def run_spectrum(self, print_hook: int = 0x0010) -> tuple:
         """Run ZX Spectrum format test."""
-        self.cpu.regs.PC = 0x8000
-        self.cpu.regs.SP = 0x7FE8
-        self.cpu.regs.AF = 0x3222
-        self.cpu.regs.I = 0x3F
+        self.cpu.registers.PC = 0x8000
+        self.cpu.registers.SP = 0x7FE8
+        self.cpu.registers.AF = 0x3222
+        self.cpu.registers.I = 0x3F
 
         completed = False
         cycles = 0
@@ -307,8 +307,8 @@ class Z80TestHarness:
                 break
 
             # Print hook at 0x0010
-            if self.cpu.regs.PC == print_hook:
-                char = self.cpu.regs.A
+            if self.cpu.registers.PC == print_hook:
+                char = self.cpu.registers.A
                 if char == 0x0D:  # ENTER
                     lines += 1
                     if cursor_x > columns:
@@ -322,7 +322,7 @@ class Z80TestHarness:
                     hash_val = fnv1_32(bytes([char]), hash_val)
                     cursor_x += 1
                 # Return from hook
-                self.cpu.regs.PC = self.cpu.regs.pop()
+                self.cpu.registers.PC = self.cpu.registers.pop()
 
         if cursor_x > columns:
             columns = cursor_x
@@ -331,10 +331,10 @@ class Z80TestHarness:
 
     def run_spectrum(self, print_hook: int) -> tuple:
         """Run ZX Spectrum format test."""
-        self.cpu.regs.PC = 0x8000
-        self.cpu.regs.SP = 0x7FE8
-        self.cpu.regs.AF = 0x3222
-        self.cpu.regs.I = 0x3F
+        self.cpu.registers.PC = 0x8000
+        self.cpu.registers.SP = 0x7FE8
+        self.cpu.registers.AF = 0x3222
+        self.cpu.registers.I = 0x3F
 
         # Set up ROM hooks
         # 0x0010 = print character
@@ -356,8 +356,8 @@ class Z80TestHarness:
                 break
 
             # Print hook at 0x0010 (or custom)
-            if self.cpu.regs.PC == print_hook:
-                char = self.cpu.regs.A
+            if self.cpu.registers.PC == print_hook:
+                char = self.cpu.registers.A
                 if char == 0x0D:  # ENTER
                     lines += 1
                     if cursor_x > columns:
@@ -371,7 +371,7 @@ class Z80TestHarness:
                     hash_val = fnv1_32(bytes([char]), hash_val)
                     cursor_x += 1
                 # Return from hook
-                self.cpu.regs.PC = self.cpu.regs.pop()
+                self.cpu.registers.PC = self.cpu.registers.pop()
 
         if cursor_x > columns:
             columns = cursor_x

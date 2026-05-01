@@ -21,26 +21,4 @@ namespace TimingConstants {
     constexpr int AMSTRAD_CPC_TSTATES_PER_FRAME = 80000;
 }
 
-// ============================================================
-// Contention model base class
-// ============================================================
-
-class ContentionModel {
-public:
-    virtual ~ContentionModel() = default;
-
-    // Calculate additional wait states for an address at a given T-state
-    virtual int get_contention(int t_state, uint16_t addr) {
-        (void)t_state;
-        (void)addr;
-        return 0;  // Default: no contention
-    }
-
-    // Check if address is in contended memory region
-    virtual bool is_contended(uint16_t addr) {
-        (void)addr;
-        return false;
-    }
-};
-
 } // namespace z80

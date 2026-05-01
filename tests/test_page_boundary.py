@@ -10,10 +10,10 @@ class TestPageBoundary:
         cpu.write_byte(0x0102, 0x20)
         write_program(cpu, [0xC3, 0x00, 0x01])
         cpu.step()
-        assert cpu.regs.PC == 0x0100
+        assert cpu.registers.PC == 0x0100
 
     def test_call_at_page_boundary(self, cpu):
-        cpu.regs.SP = 0xFFFC
+        cpu.registers.SP = 0xFFFC
         cpu.write_byte(0x0100, 0xC9)
         write_program(cpu, [0xCD, 0x00, 0x01])
         cpu.step()
@@ -21,7 +21,7 @@ class TestPageBoundary:
         assert cpu.read_byte(0xFFFB) == 0x00
 
     def test_inc_hl_wraps(self, cpu):
-        cpu.regs.HL = 0xFFFF
+        cpu.registers.HL = 0xFFFF
         write_program(cpu, [0x23])
         cpu.step()
-        assert cpu.regs.HL == 0x0000
+        assert cpu.registers.HL == 0x0000

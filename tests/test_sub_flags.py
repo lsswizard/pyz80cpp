@@ -30,42 +30,42 @@ class TestSubFlags:
         cpu.step()
         expected_flags = _sub_flags(a, b)
         mask = FLAG_S | FLAG_Z | FLAG_H | FLAG_PV | FLAG_C | FLAG_N
-        assert cpu.regs.A == (a - b) & 0xFF
-        assert (cpu.regs.F & mask) == (expected_flags & mask)
+        assert cpu.registers.A == (a - b) & 0xFF
+        assert (cpu.registers.F & mask) == (expected_flags & mask)
 
     def test_sbc_with_carry(self, cpu):
         """SBC A,n — carry is subtracted too."""
-        cpu.regs.A = 0x10
-        cpu.regs.F = FLAG_C
+        cpu.registers.A = 0x10
+        cpu.registers.F = FLAG_C
         write_program(cpu, [0xDE, 0x01])
         cpu.step()
-        assert cpu.regs.A == 0x0E
+        assert cpu.registers.A == 0x0E
 
     def test_sbc_no_carry(self, cpu):
         """SBC A,n — without carry behaves like SUB."""
-        cpu.regs.A = 0x10
-        cpu.regs.F = 0
+        cpu.registers.A = 0x10
+        cpu.registers.F = 0
         write_program(cpu, [0xDE, 0x01])
         cpu.step()
-        assert cpu.regs.A == 0x0F
+        assert cpu.registers.A == 0x0F
 
     def test_cp_does_not_modify_a(self, cpu):
         """CP n — A is unchanged after comparison."""
-        cpu.regs.A = 0x10
+        cpu.registers.A = 0x10
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
-        assert cpu.regs.A == 0x10
+        assert cpu.registers.A == 0x10
 
     def test_cp_equal_sets_z(self, cpu):
         """CP n — Z flag set when A == n."""
-        cpu.regs.A = 0x10
+        cpu.registers.A = 0x10
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
         assert flag_set(cpu, FLAG_Z)
 
     def test_cp_less_sets_carry(self, cpu):
         """CP n — carry set when A < n."""
-        cpu.regs.A = 0x05
+        cpu.registers.A = 0x05
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
         assert flag_set(cpu, FLAG_C)
@@ -73,7 +73,7 @@ class TestSubFlags:
 
     def test_cp_greater_no_carry(self, cpu):
         """CP n — no carry when A > n."""
-        cpu.regs.A = 0x20
+        cpu.registers.A = 0x20
         write_program(cpu, [0xFE, 0x10])
         cpu.step()
         assert flag_clear(cpu, FLAG_C)
@@ -92,17 +92,17 @@ class TestSubFlags:
     )
     def test_sub_a_r(self, cpu, reg, opcode):
         """SUB A,r — subtract register from A."""
-        cpu.regs.A = 0x20
-        setattr(cpu.regs, reg, 0x10)
+        cpu.registers.A = 0x20
+        setattr(cpu.registers, reg, 0x10)
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.regs.A == 0x10
+        assert cpu.registers.A == 0x10
 
     def test_sub_a_hl_indirect(self, cpu):
         """SUB A,(HL) — subtract memory byte from A."""
-        cpu.regs.A = 0x30
-        cpu.regs.HL = 0x2000
+        cpu.registers.A = 0x30
+        cpu.registers.HL = 0x2000
         cpu.write_byte(0x2000, 0x10)
         write_program(cpu, [0x96])
         cpu.step()
-        assert cpu.regs.A == 0x20
+        assert cpu.registers.A == 0x20

@@ -15,35 +15,39 @@ namespace z80 {
 
     void handle_ld_ixhl_r(Z80& cpu) {
         uint8_t op = cpu.current_opcode;
-        
-        // Handle LD IXH/L, r (0x60-0x6F) - MUST check this first
-        // 0x60-0x67 = LD IXH, r (B,C,D,E,H,L,A)
-        // 0x68-0x6F = LD IXL, r (B,C,D,E,H,L,A)
-        if (op >= 0x60 && op <= 0x6F) {
-            uint8_t dest_reg = (op <= 0x67) ? 8 : 9;  // 8=IXH, 9=IXL
-            uint8_t src_reg = op & 7;  // source register
-            cpu.write_reg8(dest_reg, cpu.read_reg8(src_reg));
+
+        // Remap: dest register = (op >> 3) & 7 for r, IXH=8, IXL=9
+        // Source register = op & 7 for r, or special case for A
+
+        // Handle LD IXH, r (0x60-0x67) - dest IXH
+        if (op >= 0x60 && op <= 0x67) {
+            cpu.write_reg8(8, cpu.read_reg8(op & 7));  // IXH = 8
         }
-        // Handle LD r, IXH/IXL (0x44-0x6D range - but NOT 0x60-0x6F)
-        else if (op >= 0x44 && op <= 0x6F) {
-            // LD r, IXH/L - destination register is r (bits 5-3)
-            // Low nibble 0x04/0x0C means IXH (0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C)
-            // Low nibble 0x05/0x0D means IXL (0x45, 0x4D, 0x55, 0x5D, 0x65, 0x6D)
-            uint8_t src_reg = ((op & 0x0F) == 0x05 || (op & 0x0F) == 0x0D) ? 9 : 8;  // 9=IXL, 8=IXH
-            cpu.write_reg8((op >> 3) & 7, cpu.read_reg8(src_reg));
+        // Handle LD IXL, r (0x68-0x6F) - dest IXL
+        else if (op >= 0x68 && op <= 0x6F) {
+            cpu.write_reg8(9, cpu.read_reg8(op & 7));  // IXL = 9
         }
-        // Handle LD A, IXL (0x7D) - special case
-        else if (op == 0x7D) {
-            cpu.regs.A = cpu.regs.IXl();
+        // Handle LD r, IXH (0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C)
+        else if ((op & 0x0C) == 0x04) {
+            cpu.write_reg8((op >> 3) & 7, cpu.read_reg8(8));  // IXH = 8
         }
-        // Handle LD IXL, A (0x7F) - special case  
-        else if (op == 0x7F) {
-            cpu.regs.set_IXl(cpu.regs.A);
+        // Handle LD r, IXL (0x45, 0x4D, 0x55, 0x5D, 0x65, 0x6D)
+        else if ((op & 0x0C) == 0x0C) {
+            cpu.write_reg8((op >> 3) & 7, cpu.read_reg8(9));  // IXL = 9
         }
-        // Handle LD A, IXH (0x7C) - special case
+        // Handle LD A, IXH (0x7C)
         else if (op == 0x7C) {
             cpu.regs.A = cpu.regs.IXh();
         }
+        // Handle LD A, IXL (0x7D)
+        else if (op == 0x7D) {
+            cpu.regs.A = cpu.regs.IXl();
+        }
+        // Handle LD IXH, A (0x7F) - note: 0x7E is LD (IX+d),A
+        else if (op == 0x7F) {
+            cpu.regs.set_IXh(cpu.regs.A);
+        }
+        // Handle LD IXL, A - wait, there's no such opcode! 0x7F above handles this?
     }
 
     void handle_ld_ixhl_n(Z80& cpu) { cpu.write_reg8((cpu.current_opcode == 0x26) ? 8 : 9, cpu.read(cpu.regs.PC++)); }

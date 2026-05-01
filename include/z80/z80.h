@@ -3,14 +3,10 @@
 #include "bus.h"
 #include "registers.h"
 #include "flags.h"
-#include <functional>
-#include <memory>
+#include <unordered_map>
 
 namespace z80 {
 
-// ============================================================
-// Instruction execute function signature
-// ============================================================
 class Z80;
 using OpHandler = void(*)(Z80&);
 
@@ -18,68 +14,67 @@ using OpHandler = void(*)(Z80&);
 // Instruction descriptor
 // ============================================================
 struct Instruction {
-    OpHandler exec = nullptr;
-    uint8_t base_cycles = 4;
-    uint8_t length = 1;
-    bool affects_flags = false;
+    OpHandler exec        = nullptr;
+    uint8_t   base_cycles = 4;
+    uint8_t   length      = 1;
+    bool      affects_flags = false;
 
-    // Default constructor
     Instruction() = default;
-    
-    // Constructor with values
-    Instruction(OpHandler e, uint8_t c, uint8_t l, bool f) 
+    Instruction(OpHandler e, uint8_t c, uint8_t l, bool f)
         : exec(e), base_cycles(c), length(l), affects_flags(f) {}
 };
 
 // ============================================================
-// Z80 CPU Class
+// Z80 CPU
 // ============================================================
 class Z80 {
 public:
-    // Constructor
-    explicit Z80(Bus* bus = nullptr);
+    explicit Z80(Bus* bus_ptr = nullptr);
     ~Z80();
 
-    // Reset the CPU
     void reset();
 
-    // ============================================================
-    // Execution - returns T-states consumed
-    // ============================================================
-    int step();                    // Execute one instruction, return cycles
-    int run(int max_cycles);      // Run until max_cycles consumed
-    int run_instructions(int count); // Run exactly N instructions
+    // Execute one instruction; returns T-states consumed
+    int step();
 
-    // ============================================================
-    // Interrupt handling
-    // ============================================================
-    void trigger_interrupt(uint8_t data);   // Request interrupt with data
-    void trigger_nmi();                       // Request NMI
-    bool is_halted() const { return halted; }
-    bool has_pending_interrupt() const { return interrupt_pending; }
-    bool has_pending_nmi() const { return nmi_pending; }
+    // Run for at most max_cycles T-states
+    int run(int max_cycles);
 
-    // ============================================================
+    // Run exactly count instructions (stops early on HALT)
+    int run_instructions(int count);
+
+    // --------------------------------------------------------
+    // Interrupt interface
+    // --------------------------------------------------------
+    void trigger_interrupt(uint8_t data = 0xFF);
+    void trigger_nmi();
+
+    bool is_halted()            const { return halted; }
+    bool has_pending_interrupt()const { return interrupt_pending; }
+    bool has_pending_nmi()      const { return nmi_pending; }
+
+    // --------------------------------------------------------
     // Register access
-    // ============================================================
-    Registers& get_registers() { return regs; }
+    // --------------------------------------------------------
+    Registers&       get_registers()       { return regs; }
     const Registers& get_registers() const { return regs; }
 
-    uint8_t read_reg8(int reg);      // reg: 0-7 (B,C,D,E,H,L,(HL),A)
-    void write_reg8(int reg, uint8_t value);
+    void    set_state(const std::unordered_map<std::string, int>& state);
+    uint8_t read_reg8(int reg);
+    void    write_reg8(int reg, uint8_t value);
 
-    // ============================================================
-    // Cycle management
-    // ============================================================
-    void add_cycles(int cycles) { total_cycles += cycles; }
-    int get_cycles() const { return total_cycles; }
-    int get_instruction_count() const { return instruction_count; }
+    // --------------------------------------------------------
+    // Cycle accounting
+    // --------------------------------------------------------
+    void add_cycles(int n) { total_cycles += n; }
+    int  get_cycles()            const { return total_cycles; }
+    int  get_instruction_count() const { return instruction_count; }
 
-    // ============================================================
-    // Bus access (cycle-accurate) - PUBLIC for handlers
-    // ============================================================
-    
-    // M1 cycle - instruction fetch (4 T-states, increments R)
+    // --------------------------------------------------------
+    // Bus accessors — called by instruction handlers
+    // --------------------------------------------------------
+
+    // M1 fetch: 4 T-states, increments R (7-bit counter, bit 7 preserved)
     inline uint8_t fetch_opcode() {
         bus_ptr->m1_cycle();
         regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
@@ -89,94 +84,89 @@ public:
         return val;
     }
 
-    // Fetch operand byte (3 T-states, no R increment)
+    // Operand/displacement byte fetch: 3 T-states, does NOT increment R
     inline uint8_t fetch_byte() {
         return read(regs.PC++);
     }
 
-    // Memory read (3 T-states + wait states)
+    // Memory read: 3 T-states + machine wait states
     inline uint8_t read(uint16_t addr) {
-        int wait_states = bus_ptr->get_memory_wait_states(addr);
-        add_cycles(3 + wait_states);
+        add_cycles(3 + bus_ptr->get_memory_wait_states(addr));
         bus_ptr->contend(addr, 3);
         return bus_ptr->read(addr);
     }
 
-    // Memory write (3 T-states + wait states)
-    inline void write(uint16_t addr, uint8_t value) {
-        int wait_states = bus_ptr->get_memory_wait_states(addr);
-        add_cycles(3 + wait_states);
+    // Memory write: 3 T-states + machine wait states
+    inline void write(uint16_t addr, uint8_t val) {
+        add_cycles(3 + bus_ptr->get_memory_wait_states(addr));
         bus_ptr->contend(addr, 3);
-        bus_ptr->write(addr, value);
+        bus_ptr->write(addr, val);
     }
 
-    // I/O read (4 T-states + wait states)
+    // I/O read: 4 T-states + machine wait states
     inline uint8_t in(uint16_t port) {
-        int wait_states = bus_ptr->get_io_wait_states(port);
-        add_cycles(4 + wait_states);
-        return bus_ptr->in(port);
+        add_cycles(4 + bus_ptr->get_io_wait_states(port));
+        return bus_ptr->in_(port);
     }
 
-    // I/O write (4 T-states + wait states)
-    inline void out(uint16_t port, uint8_t value) {
-        int wait_states = bus_ptr->get_io_wait_states(port);
-        add_cycles(4 + wait_states);
-        bus_ptr->out(port, value);
+    // I/O write: 4 T-states + machine wait states
+    inline void out(uint16_t port, uint8_t val) {
+        add_cycles(4 + bus_ptr->get_io_wait_states(port));
+        bus_ptr->out_(port, val);
     }
 
-    // Wait (add cycles without bus access)
-    inline void wait(int cycles) {
-        add_cycles(cycles);
-    }
+    // Add idle cycles (internal delay states)
+    inline void wait(int cycles) { add_cycles(cycles); }
 
-    // ============================================================
-    // Stack operations
-    // ============================================================
+    // --------------------------------------------------------
+    // Stack helpers
+    // --------------------------------------------------------
     inline uint16_t pop() {
         uint16_t lo = read(regs.SP++);
         uint16_t hi = read(regs.SP++);
         return lo | (hi << 8);
     }
 
-    inline void push(uint16_t value) {
-        write(--regs.SP, (value >> 8) & 0xFF);
-        write(--regs.SP, value & 0xFF);
+    inline void push(uint16_t val) {
+        write(--regs.SP, val >> 8);
+        write(--regs.SP, val & 0xFF);
     }
 
-    // ============================================================
-    // Condition checking
-    // ============================================================
+    // --------------------------------------------------------
+    // Condition check
+    // --------------------------------------------------------
     inline bool check_condition(int cc) const {
         return z80::check_condition(regs.F, cc);
     }
 
-    // ============================================================
-    // Set bus (can be changed at runtime)
-    // ============================================================
+    // --------------------------------------------------------
+    // Bus management
+    // --------------------------------------------------------
     void set_bus(Bus* new_bus);
 
-    // ============================================================
-    // PUBLIC members - accessible to handlers
-    // ============================================================
+    // --------------------------------------------------------
+    // Public state — accessible to handlers
+    // --------------------------------------------------------
     Registers regs;
-    uint8_t current_opcode;
-    bool prefix_ix;
-    Bus* bus_ptr;
-    int total_cycles;
-    int instruction_count;
-    bool halted;
-    bool interrupt_pending;
-    bool nmi_pending;
-    uint8_t interrupt_data;
-    // DDCB/FDCB pre-fetched values (to avoid double-read)
-    int8_t ddcb_displacement;
-    uint8_t ddcb_opcode;
+    uint8_t   current_opcode = 0;
+    bool      prefix_ix = false;   // true = DD prefix (IX), false = FD prefix (IY)
+    Bus*      bus_ptr   = nullptr;
+    int       total_cycles     = 0;
+    int       instruction_count = 0;
+    bool      halted           = false;
+    bool      interrupt_pending = false;
+    bool      nmi_pending       = false;
+    uint8_t   interrupt_data    = 0xFF;
+
+
+    // Pre-fetched values for DDCB/FDCB instructions (avoids double-read)
+    int8_t  ddcb_displacement = 0;
+    uint8_t ddcb_opcode       = 0;
 
 private:
-    bool owns_bus;
-    // Internal execution
+    bool owns_bus = false;
+
     void execute_instruction();
-    int handle_prefix(uint8_t opcode);
 };
 
 } // namespace z80

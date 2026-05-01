@@ -15,7 +15,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ============================================================
 option(BUILD_SHARED_LIBS "Build as shared library" ON)
 option(BUILD_TESTS "Build test suite" OFF)
-option(ENABLE_PYBIND11 "Enable pybind11 bindings" OFF)
+option(ENABLE_PYBIND11 "Enable pybind11 bindings" ON)
+option(ENABLE_NANOBIND "Enable nanobind bindings" OFF)
 
 # Build type: Debug, Release, Trace, Test
 set(BUILD_MODE "Release" CACHE STRING "Build mode: Debug, Release, Trace, Test")
@@ -87,9 +88,10 @@ set(Z80_HEADERS
 # ============================================================
 # Z80 Library
 # ============================================================
-add_library(z80_core ${Z80_SOURCES} ${Z80_HEADERS})
+add_library(z80_core_lib STATIC ${Z80_SOURCES} ${Z80_HEADERS})
+set_target_properties(z80_core_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(z80_core
+target_include_directories(z80_core_lib
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
@@ -97,28 +99,64 @@ target_include_directories(z80_core
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-set_target_properties(z80_core PROPERTIES
+set_target_properties(z80_core_lib PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
     PUBLIC_HEADER "${Z80_HEADERS}"
 )
 
 # ============================================================
-# Optional: pybind11 bindings
+# Optional: Python bindings (pybind11 or nanobind)
 # ============================================================
 if(ENABLE_PYBIND11)
     find_package(pybind11 CONFIG REQUIRED)
     
-    # Python binding sources (add as needed)
     set(PYBIND11_SOURCES
-        src/pybind11/z80_bindings.cpp
+        src/bindings/z80_bindings.cpp
     )
     
-    pybind11_add_module(z80_py ${PYBIND11_SOURCES})
-    target_link_libraries(z80_py PRIVATE z80_core)
-    target_include_directories(z80_py PRIVATE ${PYTHON_INCLUDE_DIRS})
+    pybind11_add_module(z80_core ${PYBIND11_SOURCES})
+    target_link_libraries(z80_core PRIVATE z80_core_lib pybind11::module)
     
-    install(TARGETS z80_py DESTINATION ${CMAKE_INSTALL_PREFIX})
+    install(TARGETS z80_core DESTINATION .)
+endif()
+
+if(ENABLE_NANOBIND)
+    find_package(Python COMPONENTS Interpreter Development REQUIRED)
+    
+    # Get Python site-packages path
+    execute_process(
+        COMMAND ${Python_EXECUTABLE} -c "import site; print(site.getsitepackages()[0])"
+        OUTPUT_VARIABLE PYTHON_SITE_PACKAGES
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "Python site-packages: ${PYTHON_SITE_PACKAGES}")
+    
+    # Header-only nanobind: compile sources directly
+    set(NANOBIND_SOURCES
+        src/bindings/z80_bindings.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/common.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/error.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/implicit.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/nb_enum.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/nb_func.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/nb_internals.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/nb_ndarray.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/nb_static_property.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/nb_type.cpp
+        ${PYTHON_SITE_PACKAGES}/nanobind/src/trampoline.cpp
+    )
+    
+    set(NANOBIND_INCLUDE 
+        ${PYTHON_SITE_PACKAGES}/nanobind/include
+        ${PYTHON_SITE_PACKAGES}/nanobind/ext/robin_map/include
+    )
+    
+    add_library(z80_core MODULE ${NANOBIND_SOURCES})
+    target_include_directories(z80_core PRIVATE ${NANOBIND_INCLUDE})
+    target_link_libraries(z80_core PRIVATE z80_core_lib Python::Module)
+    
+    install(TARGETS z80_core DESTINATION .)
 endif()
 
 # ============================================================
@@ -145,7 +183,7 @@ endif()
 # ============================================================
 include(GNUInstallDirs)
 
-install(TARGETS z80_core
+install(TARGETS z80_core_lib
     EXPORT Z80CoreTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}

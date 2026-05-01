@@ -12,7 +12,7 @@ class TestHalt:
     def test_halt_pc_unchanged(self, cpu):
         write_program(cpu, [0x76])
         cpu.step()
-        assert cpu.regs.PC == 0
+        assert cpu.registers.PC == 0
 
     def test_halt_timing(self, cpu):
         write_program(cpu, [0x76])

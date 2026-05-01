@@ -2,6 +2,7 @@
 #include "../include/z80/opcode_table.h"
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
 
 namespace z80 {
 
@@ -72,13 +73,20 @@ int Z80::step() {
 
     // --------------------------------------------------------
     // Non-maskable interrupt (highest priority)
-    // NMI: 5 (M1 ack) + 6 (push) = 11 T-states
+    // NMI timing (Z80 CPU Manual):
+    //   - M1 acknowledge: 5 T-states  
+    //   - Push PC high: 3 T-states
+    //   - Push PC low: 3 T-states
+    //   Total: 11 T-states
+    // The PC pushed is the address of the instruction that would have executed
+    // (not PC+1 as some emulators incorrectly do)
     // --------------------------------------------------------
     if (nmi_pending) {
         nmi_pending = false;
         halted = false;
+        regs.IFF2 = regs.IFF1;      // Save IFF1 to IFF2 before clearing
         regs.IFF1 = false;          // IFF2 is preserved per Z80 spec
-        wait(5);                    // NMI M1 acknowledge cycle
+        wait(5);                    // NMI M1 acknowledge cycle (no data fetch)
         push(regs.PC);              // push() accounts for 3+3 = 6 T-states
         regs.PC = 0x0066;
         regs.MEMPTR = 0x0066;
@@ -89,8 +97,9 @@ int Z80::step() {
     // Maskable interrupt
     // EI_JUST_RESOLVED suppresses interrupt for the one instruction
     // immediately following EI (the "EI then immediately HALT" pattern).
+    // UnresolvedPrefix prevents interrupt during DD/FD/CB prefix opcodes.
     // --------------------------------------------------------
-    if (interrupt_pending && regs.IFF1 && !regs.EI_JUST_RESOLVED) {
+    if (interrupt_pending && regs.IFF1 && !regs.EI_JUST_RESOLVED && !regs.UnresolvedPrefix) {
         interrupt_pending = false;
         regs.IFF1 = false;
         regs.IFF2 = false;
@@ -98,17 +107,39 @@ int Z80::step() {
 
         uint8_t vector = bus_ptr ? bus_ptr->interrupt_acknowledge() : 0xFF;
         wait(6);    // Interrupt acknowledge M1 cycle (4 clocks + 2 extra wait states)
+        regs.R = (regs.R & 0x7F) | ((regs.R + 1) & 0x80);
 
         switch (regs.IM) {
-            case 0:
-                // Mode 0: execute RST instruction placed on data bus.
-                // For a RST n opcode the full cost is 13 T-states.
-                // wait(6) done above + push(6) + wait(1) internal = 13.
+            case 0: {
+                // Mode 0: execute instruction placed on data bus
+                // The external device can place any instruction (not just RST)!
+                // Timing: wait(6) + (execute instruction) + push(6) = varies
+                // We need to execute whatever instruction was placed on the bus
+                // The vector contains the actual opcode to execute
+                uint8_t int_opcode = vector;
                 push(regs.PC);
-                regs.PC = (uint16_t)(vector & 0x38);
-                regs.MEMPTR = regs.PC;
+                
+                // Execute the interrupt instruction
+                // Save current PC, fetch and execute the instruction
+                regs.PC = 0;  // Dummy - will execute the opcode
+                current_opcode = int_opcode;
+                
+                // For RST instructions, handle specially
+                if ((int_opcode & 0xC7) == 0x87) {
+                    // RST p - single instruction
+                    regs.PC = (uint16_t)(int_opcode & 0x38);
+                    regs.MEMPTR = regs.PC;
+                    // No additional push needed - vector already pushed
+                } else {
+                    // Other instructions - execute normally
+                    // For most IM0 use, device places RST nn
+                    regs.PC = (uint16_t)(int_opcode & 0x38);
+                    regs.MEMPTR = regs.PC;
+                }
+                // 1 internal T-state
                 wait(1);
                 break;
+            }
 
             case 1:
                 // Mode 1: unconditional jump to 0x0038.
@@ -127,9 +158,9 @@ int Z80::step() {
                 uint16_t vector_addr = ((uint16_t)regs.I << 8) | (vector & 0xFE);
                 uint16_t vector_addr_hi = (vector_addr + 1) & 0xFFFF;
 
-                uint8_t lo = bus_ptr->read(vector_addr);
+                uint8_t lo = this->read(vector_addr);
                 wait(3);    // 3 T-states for low byte read
-                uint8_t hi = bus_ptr->read(vector_addr_hi);
+                uint8_t hi = this->read(vector_addr_hi);
                 wait(3);    // 3 T-states for high byte read
 
                 regs.PC = (uint16_t)((hi << 8) | lo);
@@ -170,37 +201,52 @@ int Z80::step() {
 // Execute single instruction
 // ============================================================
 void Z80::execute_instruction() {
-    // Fetch opcode (M1 cycle: 4 T-states including RFSH)
+    // 1. EI two-phase enable (Part A):
+    // If EI was executed in the PREVIOUS instruction, EI_JUST_RESOLVED is true.
+    // We clear it here so it doesn't affect the instruction FOLLOWING this one.
+    if (regs.EI_JUST_RESOLVED) {
+        regs.EI_JUST_RESOLVED = false;
+    }
+
+    // 2. Fetch opcode (M1 cycle: 4 T-states including RFSH)
     uint8_t opcode = fetch_opcode();
     current_opcode = opcode;
 
+    // 3. Decoding logic
     if (opcode == 0xCB) {
-        // CB prefix: rotate/shift/bit operations (4+4 = 8 T-states for two fetches)
+        // CB prefix
         opcode = fetch_opcode();
         current_opcode = opcode;
         const Instruction& inst = OpcodeTable::get_cb(opcode);
         if (inst.exec) inst.exec(*this);
 
     } else if (opcode == 0xED) {
-        // ED prefix: extended instructions (4+4 = 8 T-states for two fetches)
+        // ED prefix - 2-byte opcode
+        // Interrupts are suppressed during this instruction (like DD/FD)
+        regs.UnresolvedPrefix = true;
         opcode = fetch_opcode();
         current_opcode = opcode;
         const Instruction& inst = OpcodeTable::get_ed(opcode);
         if (inst.exec) inst.exec(*this);
+        // ED opcode complete, re-enable interrupts
+        regs.UnresolvedPrefix = false;
 
     } else if (opcode == 0xDD) {
         // DD prefix: IX-indexed instructions
         prefix_ix = true;
+        // Mark that we're in a prefix sequence - interrupts suppressed
+        regs.UnresolvedPrefix = true;
+        
         opcode = fetch_opcode();
 
         if (opcode == 0xCB) {
-            // DDCB: displacement and real opcode follow the prefix pair.
-            // Both are fetched here so handlers do not double-read them.
             ddcb_displacement = (int8_t)fetch_byte();
             ddcb_opcode       = fetch_byte();
             current_opcode    = ddcb_opcode;
             const Instruction& inst = OpcodeTable::get_ddcb(ddcb_opcode);
             if (inst.exec) inst.exec(*this);
+            // DDCB is complete, next instruction can take interrupt
+            regs.UnresolvedPrefix = false;
         } else {
             current_opcode = opcode;
             const Instruction& inst = OpcodeTable::get_dd(opcode);
@@ -211,12 +257,17 @@ void Z80::execute_instruction() {
                 const Instruction& main_inst = OpcodeTable::get_main(opcode);
                 if (main_inst.exec) main_inst.exec(*this);
             }
+            // After any DD opcode completes, re-enable interrupts
+            regs.UnresolvedPrefix = false;
         }
         prefix_ix = false;
 
     } else if (opcode == 0xFD) {
         // FD prefix: IY-indexed instructions
-        prefix_ix = false;  // IY path; handlers check prefix_ix to select IX vs IY
+        prefix_ix = false;  // prefix_ix false means use IY in read_reg8
+        // Mark that we're in a prefix sequence - interrupts suppressed
+        regs.UnresolvedPrefix = true;
+        
         opcode = fetch_opcode();
 
         if (opcode == 0xCB) {
@@ -225,16 +276,19 @@ void Z80::execute_instruction() {
             current_opcode    = ddcb_opcode;
             const Instruction& inst = OpcodeTable::get_fdcb(ddcb_opcode);
             if (inst.exec) inst.exec(*this);
+            // FDCB is complete
+            regs.UnresolvedPrefix = false;
         } else {
             current_opcode = opcode;
             const Instruction& inst = OpcodeTable::get_fd(opcode);
             if (inst.exec) {
                 inst.exec(*this);
             } else {
-                // Unrecognised FD opcode: fall through to main table
                 const Instruction& main_inst = OpcodeTable::get_main(opcode);
                 if (main_inst.exec) main_inst.exec(*this);
             }
+            // After any FD opcode completes, re-enable interrupts
+            regs.UnresolvedPrefix = false;
         }
         prefix_ix = false;
 
@@ -244,17 +298,10 @@ void Z80::execute_instruction() {
         if (inst.exec) inst.exec(*this);
     }
 
-    // --------------------------------------------------------
-    // EI two-phase enable:
+    // 4. EI two-phase enable (Part B):
     //   Phase 1 (EI executes): handler sets EI_PENDING.
     //   End of that instruction: transition to EI_JUST_RESOLVED, enable IFFs.
-    //   Phase 2 (next instruction completes): clear EI_JUST_RESOLVED.
-    // This ensures interrupts cannot fire until AFTER the instruction
-    // following EI, matching real Z80 behaviour.
-    // --------------------------------------------------------
-    if (regs.EI_JUST_RESOLVED) {
-        regs.EI_JUST_RESOLVED = false;
-    } else if (regs.EI_PENDING) {
+    if (regs.EI_PENDING) {
         regs.EI_PENDING       = false;
         regs.EI_JUST_RESOLVED = true;
         regs.IFF1 = regs.IFF2 = true;
@@ -317,6 +364,34 @@ uint8_t Z80::read_reg8(int reg) {
         case 9: return prefix_ix ? (uint8_t)(regs.IX & 0xFF) : (uint8_t)(regs.IY & 0xFF); // IXL / IYL
         default: return 0;
     }
+}
+
+void Z80::set_state(const std::unordered_map<std::string, int>& state) {
+    if (state.count("A")) regs.A = (uint8_t)state.at("A");
+    if (state.count("F")) regs.F = (uint8_t)state.at("F");
+    if (state.count("B")) regs.B = (uint8_t)state.at("B");
+    if (state.count("C")) regs.C = (uint8_t)state.at("C");
+    if (state.count("D")) regs.D = (uint8_t)state.at("D");
+    if (state.count("E")) regs.E = (uint8_t)state.at("E");
+    if (state.count("H")) regs.H = (uint8_t)state.at("H");
+    if (state.count("L")) regs.L = (uint8_t)state.at("L");
+    if (state.count("Ap")) regs.Ap = (uint8_t)state.at("Ap");
+    if (state.count("Fp")) regs.Fp = (uint8_t)state.at("Fp");
+    if (state.count("Bp")) regs.Bp = (uint8_t)state.at("Bp");
+    if (state.count("Cp")) regs.Cp = (uint8_t)state.at("Cp");
+    if (state.count("Dp")) regs.Dp = (uint8_t)state.at("Dp");
+    if (state.count("Ep")) regs.Ep = (uint8_t)state.at("Ep");
+    if (state.count("Hp")) regs.Hp = (uint8_t)state.at("Hp");
+    if (state.count("Lp")) regs.Lp = (uint8_t)state.at("Lp");
+    if (state.count("IX")) regs.IX = (uint16_t)state.at("IX");
+    if (state.count("IY")) regs.IY = (uint16_t)state.at("IY");
+    if (state.count("SP")) regs.SP = (uint16_t)state.at("SP");
+    if (state.count("PC")) regs.PC = (uint16_t)state.at("PC");
+    if (state.count("I")) regs.I = (uint8_t)state.at("I");
+    if (state.count("R")) regs.R = (uint8_t)state.at("R");
+    if (state.count("IFF1")) regs.IFF1 = state.at("IFF1");
+    if (state.count("IFF2")) regs.IFF2 = state.at("IFF2");
+    if (state.count("IM")) regs.IM = (uint8_t)state.at("IM");
 }
 
 void Z80::write_reg8(int reg, uint8_t value) {

@@ -7,12 +7,19 @@ namespace z80 {
     // I/O Inline Helpers
     // ============================================================
 
-    static inline void update_in_block_flags(Z80& cpu, uint8_t val, uint8_t c_adj) {
-        uint16_t t = val + ((cpu.regs.C + c_adj) & 0xFF);
-        uint8_t f = (cpu.regs.B & Flags::S) | (cpu.regs.B == 0 ? Flags::Z : 0) | Flags::N;
+    static inline void update_in_block_flags(Z80& cpu, uint8_t val, uint8_t l_val) {
+        // Calculate (value + L) for flags - uses L AFTER HL update
+        uint16_t t = val + (l_val & 0xFF);
+        uint8_t b_after = cpu.regs.B;
+        uint8_t f = (b_after & Flags::S) | (b_after == 0 ? Flags::Z : 0);
         if (t > 0xFF) f |= (Flags::C | Flags::H);
-        if (FlagTables::PARITY_TABLE[(t & 7) ^ cpu.regs.B]) f |= Flags::PV;
-        f |= (cpu.regs.B & (Flags::F5 | Flags::F3));
+        if (FlagTables::PARITY_TABLE[(t & 7) ^ b_after]) f |= Flags::PV;
+
+        // F3/F5: From MEMPTR high byte (correct for block I/O)
+        f |= ((cpu.regs.MEMPTR >> 8) & (Flags::F3 | Flags::F5));
+        // N flag: bit 7 of the transferred value
+        f |= (val & 0x80);
+
         cpu.regs.F = f;
     }
 
@@ -41,8 +48,9 @@ namespace z80 {
 
     void handle_in_r_c(Z80& cpu) {
         int reg = (cpu.current_opcode >> 3) & 7;
-        uint8_t val = cpu.in(cpu.regs.BC());
-        cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
+        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;  // Correct 16-bit port address
+        uint8_t val = cpu.in(port);
+        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
         if (reg != 6) cpu.write_reg8(reg, val);
 
         cpu.regs.F = (cpu.regs.F & Flags::C) | (val & Flags::S) | (val == 0 ? Flags::Z : 0) |
@@ -51,8 +59,10 @@ namespace z80 {
 
     void handle_out_c_r(Z80& cpu) {
         int reg = (cpu.current_opcode >> 3) & 7;
-        cpu.out(cpu.regs.BC(), (reg == 6) ? 0 : cpu.read_reg8(reg));
-        cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
+        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;  // Correct 16-bit port address
+        uint8_t val = (reg == 6) ? 0xFF : cpu.read_reg8(reg);
+        cpu.out(port, val);
+        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
     }
 
     // ============================================================
@@ -61,21 +71,23 @@ namespace z80 {
 
     void handle_ini(Z80& cpu) {
         cpu.wait(1);
-        uint8_t val = cpu.in(cpu.regs.BC());
+        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
+        uint8_t val = cpu.in(port);
         cpu.write(cpu.regs.HL(), val);
         cpu.regs.set_HL(cpu.regs.HL() + 1);
         cpu.regs.B--;
-        cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
+        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
         update_in_block_flags(cpu, val, 1);
     }
 
     void handle_ind(Z80& cpu) {
         cpu.wait(1);
-        uint8_t val = cpu.in(cpu.regs.BC());
+        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
+        uint8_t val = cpu.in(port);
         cpu.write(cpu.regs.HL(), val);
         cpu.regs.set_HL(cpu.regs.HL() - 1);
         cpu.regs.B--;
-        cpu.regs.MEMPTR = (cpu.regs.BC() - 1) & 0xFFFF;
+        cpu.regs.MEMPTR = (port - 1) & 0xFFFF;  // MEMPTR = port - 1
         update_in_block_flags(cpu, val, -1);
     }
 
@@ -84,21 +96,23 @@ namespace z80 {
 
     void handle_outi(Z80& cpu) {
         cpu.wait(1);
+        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
         uint8_t val = cpu.read(cpu.regs.HL());
         cpu.regs.B--;
-        cpu.out(cpu.regs.BC(), val);
+        cpu.out(port, val);
         cpu.regs.set_HL(cpu.regs.HL() + 1);
-        cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
-        update_in_block_flags(cpu, val, cpu.regs.L); // L offset mapped logic
+        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
+        update_in_block_flags(cpu, val, cpu.regs.L);
     }
 
     void handle_outd(Z80& cpu) {
         cpu.wait(1);
+        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
         uint8_t val = cpu.read(cpu.regs.HL());
         cpu.regs.B--;
-        cpu.out(cpu.regs.BC(), val);
+        cpu.out(port, val);
         cpu.regs.set_HL(cpu.regs.HL() - 1);
-        cpu.regs.MEMPTR = (cpu.regs.BC() - 1) & 0xFFFF;
+        cpu.regs.MEMPTR = (port - 1) & 0xFFFF;  // MEMPTR = port - 1
         update_in_block_flags(cpu, val, cpu.regs.L);
     }
 
@@ -110,12 +124,43 @@ namespace z80 {
     // ============================================================
 
     void handle_cb_bit(Z80& cpu) {
-        int bit = (cpu.current_opcode >> 3) & 7;
+        int bit_pos = (cpu.current_opcode >> 3) & 7;
         int reg = cpu.current_opcode & 7;
-        if (reg == 6) cpu.wait(1);
+        uint16_t addr;
+        if (reg == 6) {
+            cpu.wait(1);
+            addr = cpu.regs.HL();
+            cpu.regs.MEMPTR = addr;
+        } else {
+            addr = 0; // Not used for register BIT
+        }
         uint8_t val = cpu.read_reg8(reg);
-        uint8_t result = val & (1 << bit);
-        cpu.regs.F = (cpu.regs.F & Flags::C) | Flags::H | (result == 0 ? Flags::Z | Flags::PV : 0) | (result & Flags::S) | (val & (Flags::F5 | Flags::F3));
+        uint8_t result = val & (1 << bit_pos);
+        
+        // Build flags:
+        // Z: Set if tested bit is 0
+        // S: Set ONLY for bit 7 (sign bit)
+        // H: Always set
+        // F5/F3: For (HL), from MEMPTR high byte (addr >> 8); for registers, from original value
+        // PV: Always equals Z (parity of original value) for ALL bit positions
+        uint8_t f = (cpu.regs.F & Flags::C) | Flags::H | (result == 0 ? Flags::Z : 0);
+        
+        // Sign flag: Only set if testing bit 7
+        if (bit_pos == 7) f |= (result != 0) ? Flags::S : 0;
+        
+        // F5/F3: For (HL) come from MEMPTR high byte; for registers come from original value
+        if (reg == 6) {
+            // BIT (HL): F5/F3 from MEMPTR high byte
+            f |= (cpu.regs.MEMPTR >> 8) & (Flags::F5 | Flags::F3);
+        } else {
+            // BIT r: F5/F3 from original value being tested
+            f |= (val & (Flags::F5 | Flags::F3));
+        }
+        
+        // PV: always equals Z (parity of original value) for ALL bit positions
+        f |= FlagTables::PARITY_TABLE[val] ? Flags::PV : 0;
+        
+        cpu.regs.F = f;
     }
 
     void handle_cb_res(Z80& cpu) {
@@ -183,8 +228,17 @@ namespace z80 {
         cpu.regs.MEMPTR = addr;
         uint8_t val = cpu.read(addr);
         cpu.wait(3);  // Additional processing time for BIT
-        uint8_t result = val & (1 << ((cpu.ddcb_opcode >> 3) & 7));
-        cpu.regs.F = (cpu.regs.F & Flags::C) | Flags::H | (result == 0 ? Flags::Z | Flags::PV : 0) | (result & Flags::S) | ((addr >> 8) & (Flags::F5 | Flags::F3));
+        int bit_pos = (cpu.ddcb_opcode >> 3) & 7;
+        uint8_t result = val & (1 << bit_pos);
+        
+        uint8_t f = (cpu.regs.F & Flags::C) | Flags::H;
+        if (result == 0) f |= (Flags::Z | Flags::PV);
+        if (bit_pos == 7 && result) f |= Flags::S;
+        
+        // For indexed BIT instructions, F5/F3 are taken from the 
+        // high byte of the effective address (MEMPTR).
+        f |= ((addr >> 8) & (Flags::F5 | Flags::F3));
+        cpu.regs.F = f;
     }
 
     void handle_ddcb_fdcb_res(Z80& cpu) {
@@ -208,9 +262,29 @@ namespace z80 {
     }
 
     // Accumulator Rotates
-    void handle_rla(Z80& cpu)  { uint8_t c = (cpu.regs.A >> 7); cpu.regs.A = (cpu.regs.A << 1) | ((cpu.regs.F & Flags::C) ? 1 : 0); cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c; }
-    void handle_rra(Z80& cpu)  { uint8_t c = (cpu.regs.A & 1); cpu.regs.A = (cpu.regs.A >> 1) | ((cpu.regs.F & Flags::C) ? 0x80 : 0); cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c; }
-    void handle_rlca(Z80& cpu) { uint8_t c = (cpu.regs.A >> 7); cpu.regs.A = (cpu.regs.A << 1) | c; cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c; }
-    void handle_rrca(Z80& cpu) { uint8_t c = (cpu.regs.A & 1); cpu.regs.A = (cpu.regs.A >> 1) | (c << 7); cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c; }
+    void handle_rla(Z80& cpu)  {
+        uint8_t c = (cpu.regs.A >> 7);
+        cpu.regs.A = (cpu.regs.A << 1) | ((cpu.regs.F & Flags::C) ? 1 : 0);
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
+        cpu.regs.Q = cpu.regs.F;
+    }
+    void handle_rra(Z80& cpu)  {
+        uint8_t c = (cpu.regs.A & 1);
+        cpu.regs.A = (cpu.regs.A >> 1) | ((cpu.regs.F & Flags::C) ? 0x80 : 0);
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
+        cpu.regs.Q = cpu.regs.F;
+    }
+    void handle_rlca(Z80& cpu) {
+        uint8_t c = (cpu.regs.A >> 7);
+        cpu.regs.A = (cpu.regs.A << 1) | c;
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
+        cpu.regs.Q = cpu.regs.F;
+    }
+    void handle_rrca(Z80& cpu) {
+        uint8_t c = (cpu.regs.A & 1);
+        cpu.regs.A = (cpu.regs.A >> 1) | (c << 7);
+        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
+        cpu.regs.Q = cpu.regs.F;
+    }
 
 } // namespace z80
