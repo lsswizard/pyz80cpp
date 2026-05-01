@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive CB-prefixed BIT, SET, RES instruction tests."""
 import pytest
-from conftest import write_program, run_cb_instruction, flag_set, flag_clear, FLAG_Z, FLAG_H, FLAG_C, FLAG_PV, FLAG_S
+from conftest import write_program, run_cb_instruction, flag_set, flag_clear, FLAG_Z, FLAG_H, FLAG_C, FLAG_PV, FLAG_N, FLAG_S
 
 
 class TestBIT:
@@ -9,12 +9,12 @@ class TestBIT:
     @pytest.mark.parametrize("bit,reg,opcode", [
         (0, "B", 0x40), (1, "B", 0x48), (2, "B", 0x50), (3, "B", 0x58),
         (4, "B", 0x60), (5, "B", 0x68), (6, "B", 0x70), (7, "B", 0x78),
-        (0, "C", 0x41), (7, "C", 0x49),
-        (0, "D", 0x42), (7, "D", 0x4A),
-        (0, "E", 0x43), (7, "E", 0x4B),
-        (0, "H", 0x44), (7, "H", 0x4C),
-        (0, "L", 0x45), (7, "L", 0x4D),
-        (0, "A", 0x47), (7, "A", 0x4F),
+        (0, "C", 0x41), (7, "C", 0x79),
+        (0, "D", 0x42), (7, "D", 0x7A),
+        (0, "E", 0x43), (7, "E", 0x7B),
+        (0, "H", 0x44), (7, "H", 0x7C),
+        (0, "L", 0x45), (7, "L", 0x7D),
+        (0, "A", 0x47), (7, "A", 0x7F),
     ])
     def test_bit_r_set(self, cpu, bit, reg, opcode):
         """BIT b,r — bit is set."""
@@ -22,7 +22,7 @@ class TestBIT:
         run_cb_instruction(cpu, opcode)
         assert flag_clear(cpu, FLAG_Z)  # Bit is set, so Z = 0
         assert cpu.registers.F & FLAG_H  # H always set for BIT
-        assert cpu.registers.F & FLAG_PV  # PV = not Z (bit is set)
+        assert flag_clear(cpu, FLAG_PV)  # PV = Z (bit is set, so PV = 0)
 
     @pytest.mark.parametrize("bit,reg,opcode", [
         (0, "B", 0x40), (7, "B", 0x78),
@@ -33,7 +33,7 @@ class TestBIT:
         run_cb_instruction(cpu, opcode)
         assert flag_set(cpu, FLAG_Z)  # Bit is clear, so Z = 1
         assert cpu.registers.F & FLAG_H  # H always set for BIT
-        assert flag_clear(cpu, FLAG_PV)  # PV = not Z (bit is clear)
+        assert flag_set(cpu, FLAG_PV)  # PV = Z (bit is clear, so PV = 1)
 
     def test_bit_7_sets_sign(self, cpu):
         """BIT 7,r — sets S flag when bit 7 is set."""
@@ -174,15 +174,15 @@ class TestBITFlags:
         run_cb_instruction(cpu, 0x78)
         assert flag_clear(cpu, FLAG_S)
 
-    def test_bit_pv_equals_not_z(self, cpu):
-        """BIT sets PV = not Z (PV indicates bit test result)."""
+    def test_bit_pv_equals_z(self, cpu):
+        """BIT sets PV = Z (PV mirrors the Z flag)."""
         cpu.registers.B = 0x01  # Bit 0 set
         run_cb_instruction(cpu, 0x40)  # BIT 0,B
-        assert cpu.registers.F & FLAG_PV  # PV = 1 (bit set)
+        assert flag_clear(cpu, FLAG_PV)  # PV = 0 (Z is 0, bit is set)
 
         cpu.registers.B = 0x00  # Bit 0 clear
         run_cb_instruction(cpu, 0x40)
-        assert flag_clear(cpu, FLAG_PV)  # PV = 0 (bit clear)
+        assert flag_set(cpu, FLAG_PV)  # PV = 1 (Z is 1, bit is clear)
 
 
 class TestSETRESFlags:
