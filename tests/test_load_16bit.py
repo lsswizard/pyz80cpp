@@ -211,17 +211,23 @@ class TestAdd16Bit:
         assert not (cpu.registers.F & FLAG_N)  # N always cleared
 
     # ADD IX/IY,rr
-    @pytest.mark.parametrize("prefix,opcode,ix_reg", [
-        (0xDD, 0x09, "IX"), (0xDD, 0x19, "IX"), (0xDD, 0x29, "IX"), (0xDD, 0x39, "IX"),
-        (0xFD, 0x09, "IY"), (0xFD, 0x19, "IY"), (0xFD, 0x29, "IY"), (0xFD, 0x39, "IY"),
+    @pytest.mark.parametrize("prefix,opcode,rr,ix_reg,expected", [
+        (0xDD, 0x09, "BC", "IX", 0x3000), (0xDD, 0x19, "DE", "IX", 0x3000), 
+        (0xDD, 0x29, "HL", "IX", 0x3000), (0xDD, 0x39, "SP", "IX", 0x3000),
+        (0xFD, 0x09, "BC", "IY", 0x3000), (0xFD, 0x19, "DE", "IY", 0x3000), 
+        (0xFD, 0x29, "HL", "IY", 0x3000), (0xFD, 0x39, "SP", "IY", 0x3000),
     ])
-    def test_add_ix_iy_rr(self, cpu, prefix, opcode, ix_reg):
+    def test_add_ix_iy_rr(self, cpu, prefix, opcode, rr, ix_reg, expected):
         """ADD IX/IY,rr — 16-bit index addition."""
+        # Set source register first, then IX/IY
+        if rr == "HL":
+            cpu.registers.HL = 0x2000
+        else:
+            setattr(cpu.registers, rr, 0x2000)
         setattr(cpu.registers, ix_reg, 0x1000)
-        cpu.registers.BC = 0x2000
         write_program(cpu, [prefix, opcode])
         cpu.step()
-        assert getattr(cpu.registers, ix_reg) == 0x3000
+        assert getattr(cpu.registers, ix_reg) == expected
 
 
 class TestAdcSbc16Bit:
