@@ -9,7 +9,7 @@ A high-performance Z80 CPU emulator implemented in C++ as a reusable library. Th
 - **Modular handler architecture** — handlers organized by category (ALU, block, I/O, jump, load)
 - **Flat register API** — `cpu.A`, `cpu.PC`, `cpu.HL`, `cpu.IFF1`, etc.
 - **Clean header/include separation** — proper C++ library layout
-- **Optional Python bindings** — pybind11 bindings available via `-DENABLE_PYBIND11`
+- **Optional Python bindings** — nanobind bindings available via `-DENABLE_NANOBIND=ON`
 - **CMake build system** — modern CMake with find_package support
 - **No external dependencies** — standalone C++ core
 - **Latest v2.4.1** — Improved flag accuracy, timing, and MEMPTR handling (see CHANGELOG.md)

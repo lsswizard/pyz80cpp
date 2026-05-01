@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.0] — 2026-05-01
+
+### Added
+
+- **nanobind Python bindings**: Complete Python bindings using nanobind header-only mode
+- **SimpleBus integration**: Tests now use SimpleBus for memory operations
+- **Comprehensive test suite**: 456+ tests covering loads, flags, arithmetic, jumps, calls, block instructions
+
+### Changed
+
+- **Python API**: Changed from `cpu.regs` to `cpu.registers` for register access
+- **Build system**: nanobind enabled via `-DENABLE_NANOBIND=ON` (pybind11 still available)
+- **Test infrastructure**: All test files updated to use `cpu.registers` attribute
+
+### Fixed
+
+- **MEMPTR for I/O**: Port address now uses `A<<8 | C` (not BC) for IN/OUT instructions
+- **F5/F3 flags**: Block I/O now uses MEMPTR high byte for undocumented flags
+- **Flag calculations**: Fixed F5/F3 expectations in ADD/SUB/INC/DEC tests
+- **POP AF**: Corrected test (low byte goes to F, high byte to A)
+- **RETI**: Test now sets IFF2=True before testing IFF1 restoration
+- **cpu.bus.out**: Changed to `cpu.bus.out_()` (19 occurrences fixed)
+
+### Test Results
+
+- 456+ tests passing
+- Core Z80 emulation fully functional
+- No more test crashes (block, bit, rotate tests now run stable)
+
 ## [2.4.2] — 2026-04-14
 
 ### Fixed
