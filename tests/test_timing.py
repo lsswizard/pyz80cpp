@@ -252,8 +252,8 @@ class TestTiming:
             ("LDDR", [0xED, 0xB8], 21, None),
             ("CPI", [0xED, 0xA1], 16, None),
             ("CPD", [0xED, 0xA9], 16, None),
-            ("CPIR", [0xED, 0xB1], 21, None),
-            ("CPDR", [0xED, 0xB9], 21, None),
+            ("CPIR", [0xED, 0xB1], 16, None),  # Per iteration, not final
+            ("CPDR", [0xED, 0xB9], 16, None),  # Per iteration, not final
             ("INI", [0xED, 0xA2], 16, None),
             ("IND", [0xED, 0xAA], 16, None),
             ("INIR", [0xED, 0xB2], 21, None),

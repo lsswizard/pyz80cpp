@@ -93,7 +93,7 @@ class TestOrRegister:
     @pytest.mark.parametrize("reg,opcode,expected", [
         ("B", 0xB0, 0xFF), ("C", 0xB1, 0xFF), ("D", 0xB2, 0xFF), ("E", 0xB3, 0xFF),
         ("H", 0xB4, 0xFF), ("L", 0xB5, 0xFF), 
-        ("A", 0xB7, 0xF0),  # OR A,A = 0xF0 | 0xF0 = 0xF0
+        ("A", 0xB7, 0x0F),  # OR A,A = 0x0F | 0x0F = 0x0F (A was set to 0x0F, not overwritten)
     ])
     def test_or_r(self, cpu, reg, opcode, expected):
         """OR r — register operand."""
@@ -212,7 +212,7 @@ class TestCpImmediate:
 
     @pytest.mark.parametrize("a,n,expect_z,expect_c,expect_h,expect_pv,expect_s", [
         (0x00, 0x00, True, False, False, False, False),
-        (0xFF, 0x01, False, False, True, False, True),  # 0xFF - 0x01 = 0xFE, no borrow, H from lower nibble
+        (0xFF, 0x01, False, False, False, False, True),  # 0xFF - 0x01 = 0xFE, no half borrow, no carry
         (0x80, 0x80, True, False, False, False, False),
         (0x7F, 0x01, False, False, False, False, False),  # 0x7F - 0x01 = 0x7E, no overflow, no H
     ])
