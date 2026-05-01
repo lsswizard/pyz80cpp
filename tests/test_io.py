@@ -20,14 +20,14 @@ class TestInAN:
 
     def test_in_a_n_flags(self, cpu):
         """IN A,(n) — sets flags based on value."""
-        cpu.registers.A = 0x01  # Port address = 0x01<<8 | 0x01 = 0x101
-        cpu.bus.out_(0x01, 0x80)  # Negative value
+        cpu.registers.A = 0x01  # Port address = 0x01 (not A<<8 | n)
+        cpu.bus.out_(0x01, 0x80)  # Write 0x80 to port 0x01
         write_program(cpu, [0xDB, 0x01])
         cpu.step()
         assert cpu.registers.A == 0x80
-        assert flag_set(cpu, FLAG_S)
+        assert flag_set(cpu, FLAG_S)  # 0x80 has bit 7 set
         assert flag_clear(cpu, FLAG_Z)
-        assert flag_clear(cpu, FLAG_H)
+        assert flag_clear(cpu, FLAG_H)  # H cleared by IN
         assert flag_clear(cpu, FLAG_N)
 
     def test_in_a_n_zero(self, cpu):
