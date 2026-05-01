@@ -24,12 +24,20 @@ FLAG_C  = 0x01  # Carry
 
 _F53 = FLAG_F5 | FLAG_F3
 
-@pytest.fixture
+_shared_bus = None
+
+def _get_bus():
+    """Get or create shared bus."""
+    global _shared_bus
+    if _shared_bus is None:
+        _shared_bus = SimpleBus()
+    return _shared_bus
+
+@pytest.fixture(scope="function")
 def cpu():
     """Fresh Z80CPU instance for each test."""
     c = Z80CPU()
-    bus = SimpleBus()
-    c.bus = bus
+    c.bus = _get_bus()
     c.registers.F = 0
     c.registers.A = 0
     return c
