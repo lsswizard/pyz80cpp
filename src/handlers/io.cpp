@@ -157,8 +157,8 @@ void handle_out_n_a(Z80& cpu) {
             f |= (val & (Flags::F5 | Flags::F3));
         }
         
-        // PV: always equals Z (parity of original value) for ALL bit positions
-        f |= FlagTables::PARITY_TABLE[val] ? Flags::PV : 0;
+        // PV = Z (set when bit is clear/0)
+        if (result == 0) f |= Flags::PV;
         
         cpu.regs.F = f;
     }
