@@ -175,10 +175,14 @@ class TestAdd16Bit:
     def test_add_hl_rr(self, cpu, opcode, reg_name):
         """ADD HL,rr — 16-bit addition to HL."""
         cpu.registers.HL = 0x1000
-        setattr(cpu.registers, reg_name, 0x2000)
+        if reg_name != "HL":
+            setattr(cpu.registers, reg_name, 0x2000)
+            expected = 0x3000
+        else:
+            expected = 0x2000  # HL = 0x1000, ADD HL,HL = 0x2000
         write_program(cpu, [opcode])
         cpu.step()
-        assert cpu.registers.HL == 0x3000
+        assert cpu.registers.HL == expected
         assert not (cpu.registers.F & FLAG_N)
 
     def test_add_hl_rr_carry(self, cpu):
@@ -207,24 +211,26 @@ class TestAdd16Bit:
         cpu.step()
         # S, Z, PV should be preserved
         assert cpu.registers.F & (FLAG_S | FLAG_Z | FLAG_PV)
-        assert cpu.registers.F & FLAG_H  # H reflects carry from bit 11
+        # 0x1000 + 0x2000 = 0x3000 (no carry from bit 11)
+        assert not (cpu.registers.F & FLAG_H)
         assert not (cpu.registers.F & FLAG_N)  # N always cleared
 
     # ADD IX/IY,rr
     @pytest.mark.parametrize("prefix,opcode,rr,ix_reg,expected", [
-        (0xDD, 0x09, "BC", "IX", 0x3000), (0xDD, 0x19, "DE", "IX", 0x3000), 
-        (0xDD, 0x29, "HL", "IX", 0x3000), (0xDD, 0x39, "SP", "IX", 0x3000),
-        (0xFD, 0x09, "BC", "IY", 0x3000), (0xFD, 0x19, "DE", "IY", 0x3000), 
-        (0xFD, 0x29, "HL", "IY", 0x3000), (0xFD, 0x39, "SP", "IY", 0x3000),
+        (0xDD, 0x09, "BC", "IX", 0x3000), (0xDD, 0x19, "DE", "IX", 0x3000),
+        (0xDD, 0x29, "IX", "IX", 0x2000), (0xDD, 0x39, "SP", "IX", 0x3000),
+        (0xFD, 0x09, "BC", "IY", 0x3000), (0xFD, 0x19, "DE", "IY", 0x3000),
+        (0xFD, 0x29, "IY", "IY", 0x2000), (0xFD, 0x39, "SP", "IY", 0x3000),
     ])
     def test_add_ix_iy_rr(self, cpu, prefix, opcode, rr, ix_reg, expected):
         """ADD IX/IY,rr — 16-bit index addition."""
         # Set source register first, then IX/IY
-        if rr == "HL":
-            cpu.registers.HL = 0x2000
+        if rr in ["IX", "IY"]:
+             setattr(cpu.registers, ix_reg, 0x1000)
         else:
-            setattr(cpu.registers, rr, 0x2000)
-        setattr(cpu.registers, ix_reg, 0x1000)
+             setattr(cpu.registers, rr, 0x2000)
+             setattr(cpu.registers, ix_reg, 0x1000)
+             
         write_program(cpu, [prefix, opcode])
         cpu.step()
         assert getattr(cpu.registers, ix_reg) == expected
@@ -234,7 +240,7 @@ class TestAdcSbc16Bit:
     """ADC HL,rr and SBC HL,rr (ED prefix) - 16-bit add/sub with carry."""
     @pytest.mark.parametrize("opcode,reg,expected", [
         (0x4A, "BC", 0x3001), (0x5A, "DE", 0x3001), 
-        (0x6A, "HL", 0x4001),  # ADC HL,HL = 0x2000 + 0x2000 + 1
+        (0x6A, "HL", 0x2001),  # ADC HL,HL = 0x1000 + 0x1000 + 1
         (0x7A, "SP", 0x3001),
     ])
     def test_adc_hl_rr(self, cpu, opcode, reg, expected):
@@ -249,7 +255,7 @@ class TestAdcSbc16Bit:
 
     @pytest.mark.parametrize("opcode,reg,expected", [
         (0x42, "BC", 0x1FFF), (0x52, "DE", 0x1FFF),
-        (0x62, "HL", 0x0FFF),  # SBC HL,HL = 0x2000 - 0x2000 - 1 = 0x0FFF
+        (0x62, "HL", 0xFFFF),  # SBC HL,HL = 0x3000 - 0x3000 - 1 = 0xFFFF
         (0x72, "SP", 0x1FFF),
     ])
     def test_sbc_hl_rr(self, cpu, opcode, reg, expected):

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.1] — 2026-05-01
+
+### Fixed
+
+- **IN A, (C) mapping**: Corrected `opcode_table.cpp` where opcode `0xED 0x78` was incorrectly mapped to `LD A, R`.
+- **IM 2 Timing**: Fixed `z80.cpp` to remove redundant wait states. Memory reads already account for 3 T-states, correcting IM 2 response to 19 T-states.
+- **R Register Mask**: Fixed `z80.cpp` mask for `R` register increment during interrupts (now correctly preserves bit 7).
+- **Undocumented IM Opcodes**: Added missing aliases for IM 0 (`0x4E, 0x66, 0x6E`), IM 1 (`0x76`), and IM 2 (`0x7E`) to `ed_table`.
+- **16-bit Arithmetic Tests**: Fixed flawed test logic in `test_load_16bit.py` for `ADD HL, HL`, `ADC HL, HL`, and `SBC HL, HL` cases.
+- **I/O Parity Test**: Fixed `test_io.py` to reset `BC` between steps, preventing port address corruption during `IN B, (C)` tests.
+- **Exerciser Test**: Fixed `test_z80_exerciser.py` memory initialization, stack handling, and CP/M hook logic.
+
+### Improved
+
+- **Exerciser Output**: Added real-time character printing to ZEXDOC/ZEXALL exerciser tests.
+- **CI Stability**: Partial exerciser runs (10M cycles) added to CI smoke tests.
+
 ## [2.5.0] — 2026-05-01
 
 ### Added

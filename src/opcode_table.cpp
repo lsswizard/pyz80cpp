@@ -537,9 +537,14 @@ void OpcodeTable::init() {
 
     // IM set
     ed_table[0x46] = Instruction(handle_im, 8, 2, false);  // IM 0
+    ed_table[0x4E] = Instruction(handle_im, 8, 2, false);  // IM 0 (undocumented)
     ed_table[0x56] = Instruction(handle_im, 8, 2, false);  // IM 1
     ed_table[0x57] = Instruction(handle_ld_a_i, 9, 2, true);  // LD A, I
     ed_table[0x5E] = Instruction(handle_im, 8, 2, false);  // IM 2
+    ed_table[0x66] = Instruction(handle_im, 8, 2, false);  // IM 0 (undocumented)
+    ed_table[0x6E] = Instruction(handle_im, 8, 2, false);  // IM 0 (undocumented)
+    ed_table[0x76] = Instruction(handle_im, 8, 2, false);  // IM 1 (undocumented)
+    ed_table[0x7E] = Instruction(handle_im, 8, 2, false);  // IM 2 (undocumented)
     ed_table[0x67] = Instruction(handle_rrd, 18, 2, true);
     ed_table[0x6F] = Instruction(handle_rld, 18, 2, true);
     
@@ -568,7 +573,6 @@ void OpcodeTable::init() {
 
     // LD A, I / LD A, R
     ed_table[0x5F] = Instruction(handle_ld_a_r, 9, 2, true);
-    ed_table[0x78] = Instruction(handle_ld_a_r, 9, 2, true);
 
     // =====================
     // DD/FD prefix tables (IX/IY)

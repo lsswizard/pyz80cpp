@@ -107,7 +107,7 @@ int Z80::step() {
 
         uint8_t vector = bus_ptr ? bus_ptr->interrupt_acknowledge() : 0xFF;
         wait(6);    // Interrupt acknowledge M1 cycle (4 clocks + 2 extra wait states)
-        regs.R = (regs.R & 0x7F) | ((regs.R + 1) & 0x80);
+        regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
 
         switch (regs.IM) {
             case 0: {
@@ -152,16 +152,14 @@ int Z80::step() {
 
             case 2: {
                 // Mode 2: vectored interrupt via I register.
-                // wait(6) + push(6) + wait(3) + wait(3) + wait(1) = 19 T-states.
+                // wait(6) + push(6) + read(3) + read(3) + wait(1) = 19 T-states.
                 push(regs.PC);
 
                 uint16_t vector_addr = ((uint16_t)regs.I << 8) | (vector & 0xFE);
                 uint16_t vector_addr_hi = (vector_addr + 1) & 0xFFFF;
 
                 uint8_t lo = this->read(vector_addr);
-                wait(3);    // 3 T-states for low byte read
                 uint8_t hi = this->read(vector_addr_hi);
-                wait(3);    // 3 T-states for high byte read
 
                 regs.PC = (uint16_t)((hi << 8) | lo);
                 regs.MEMPTR = regs.PC;
@@ -227,6 +225,12 @@ void Z80::execute_instruction() {
         opcode = fetch_opcode();
         current_opcode = opcode;
         const Instruction& inst = OpcodeTable::get_ed(opcode);
+        // Debug output
+        FILE* f = fopen("/tmp/z80_debug.log", "a");
+        if (f) {
+            fprintf(f, "DEBUG ED prefix: opcode=0x%02X handler=%p\n", opcode, (void*)inst.exec);
+            fclose(f);
+        }
         if (inst.exec) inst.exec(*this);
         // ED opcode complete, re-enable interrupts
         regs.UnresolvedPrefix = false;

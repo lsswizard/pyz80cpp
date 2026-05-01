@@ -35,9 +35,17 @@ namespace z80 {
     // ============================================================
 
     void handle_in_a_n(Z80& cpu) {
-        uint8_t port = cpu.read(cpu.regs.PC++);
-        cpu.regs.A = cpu.in(port);
-        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;
+        uint8_t n = cpu.read(cpu.regs.PC++);
+        uint16_t port = (cpu.regs.A << 8) | n;  // Z80 uses A<<8 | n as 16-bit port
+        uint8_t val = cpu.in(port);
+        cpu.regs.A = val;
+        // Set flags based on input value (S, Z, H=0, P/V=parity, N=0, C unchanged)
+        cpu.regs.F = (cpu.regs.F & Flags::C) |  // Preserve carry
+                      (val & Flags::S) |               // Sign
+                      (val == 0 ? Flags::Z : 0) |      // Zero
+                      (val & (Flags::F5 | Flags::F3)) | // F5/F3 (copy of bits 5/3)
+                      (FlagTables::PARITY_TABLE[val] ? Flags::PV : 0); // Parity
+        cpu.regs.MEMPTR = ((n + 1) & 0xFF) | (cpu.regs.A << 8);
     }
 
 void handle_out_n_a(Z80& cpu) {
@@ -48,10 +56,17 @@ void handle_out_n_a(Z80& cpu) {
 
     void handle_in_r_c(Z80& cpu) {
         int reg = (cpu.current_opcode >> 3) & 7;
-        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;  // Correct 16-bit port address
+        uint16_t port = (cpu.regs.B << 8) | cpu.regs.C;  // Z80 uses BC as 16-bit port address
         uint8_t val = cpu.in(port);
         cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
         if (reg != 6) cpu.write_reg8(reg, val);
+        // Debug output to file
+        FILE* f = fopen("/tmp/z80_debug.log", "a");
+        if (f) {
+            fprintf(f, "DEBUG handle_in_r_c: opcode=0x%02X reg=%d port=0x%04X val=0x%02X A=0x%02X B=0x%02X C=0x%02X BC=0x%04X\n",
+                    cpu.current_opcode, reg, port, val, cpu.regs.A, cpu.regs.B, cpu.regs.C, cpu.regs.BC());
+            fclose(f);
+        }
 
         cpu.regs.F = (cpu.regs.F & Flags::C) | (val & Flags::S) | (val == 0 ? Flags::Z : 0) |
         (val & (Flags::F5 | Flags::F3)) | (FlagTables::PARITY_TABLE[val] ? Flags::PV : 0);
@@ -59,7 +74,7 @@ void handle_out_n_a(Z80& cpu) {
 
     void handle_out_c_r(Z80& cpu) {
         int reg = (cpu.current_opcode >> 3) & 7;
-        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;  // Correct 16-bit port address
+        uint16_t port = (cpu.regs.B << 8) | cpu.regs.C;  // Z80 uses BC as 16-bit port address
         uint8_t val = (reg == 6) ? 0xFF : cpu.read_reg8(reg);
         cpu.out(port, val);
         cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
