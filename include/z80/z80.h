@@ -66,21 +66,28 @@ public:
     // --------------------------------------------------------
     // Cycle accounting
     // --------------------------------------------------------
-    void add_cycles(int n) { total_cycles += n; }
-    int  get_cycles()            const { return total_cycles; }
-    int  get_instruction_count() const { return instruction_count; }
+    void add_cycles(uint64_t n) { total_cycles += n; }
+    uint64_t get_cycles()            const { return total_cycles; }
+    uint64_t get_instruction_count() const { return instruction_count; }
 
     // --------------------------------------------------------
     // Bus accessors — called by instruction handlers
     // --------------------------------------------------------
 
     // M1 fetch: 4 T-states, increments R (7-bit counter, bit 7 preserved)
+    // M1 cycle is always the first M-cycle (current_m_cycle = 0)
     inline uint8_t fetch_opcode() {
         bus_ptr->m1_cycle();
         regs.R = (regs.R & 0x80) | ((regs.R + 1) & 0x7F);
+        // M1 fetch uses per-cycle contention with m_cycle = 0
+        int wait_states = bus_ptr->get_contention_wait_states(regs.PC, 0, 0);
+        add_cycles(4 + wait_states);
+        bus_ptr->contend(regs.PC, 4);
         uint8_t val = bus_ptr->read(regs.PC);
         regs.PC = (regs.PC + 1) & 0xFFFF;
-        add_cycles(4);
+        // M1 cycle = 4 T-states, advance to next M-cycle for operand fetches
+        current_m_cycle = 1;
+        cycle_in_m = 0;
         return val;
     }
 
@@ -90,28 +97,58 @@ public:
     }
 
     // Memory read: 3 T-states + machine wait states
+    // Uses per-M-cycle contention if available, otherwise falls back to flat wait states
     inline uint8_t read(uint16_t addr) {
-        add_cycles(3 + bus_ptr->get_memory_wait_states(addr));
+        int wait_states = bus_ptr->get_contention_wait_states(addr, cycle_in_m, current_m_cycle);
+        add_cycles(3 + wait_states);
         bus_ptr->contend(addr, 3);
+        // Advance within M-cycle (3 T-states per memory access)
+        cycle_in_m += 3;
+        if (cycle_in_m >= 4) {
+            cycle_in_m = 0;
+            current_m_cycle++;
+        }
         return bus_ptr->read(addr);
     }
 
     // Memory write: 3 T-states + machine wait states
     inline void write(uint16_t addr, uint8_t val) {
-        add_cycles(3 + bus_ptr->get_memory_wait_states(addr));
+        int wait_states = bus_ptr->get_contention_wait_states(addr, cycle_in_m, current_m_cycle);
+        add_cycles(3 + wait_states);
         bus_ptr->contend(addr, 3);
+        // Advance within M-cycle
+        cycle_in_m += 3;
+        if (cycle_in_m >= 4) {
+            cycle_in_m = 0;
+            current_m_cycle++;
+        }
         bus_ptr->write(addr, val);
     }
 
     // I/O read: 4 T-states + machine wait states
     inline uint8_t in(uint16_t port) {
-        add_cycles(4 + bus_ptr->get_io_wait_states(port));
+        int wait_states = bus_ptr->get_io_wait_states(port);
+        // I/O operations also use contention (important for Spectrum)
+        int contention = bus_ptr->get_contention_wait_states(port, cycle_in_m, current_m_cycle);
+        add_cycles(4 + wait_states + contention);
+        cycle_in_m += 4;
+        if (cycle_in_m >= 4) {
+            cycle_in_m = 0;
+            current_m_cycle++;
+        }
         return bus_ptr->in_(port);
     }
 
     // I/O write: 4 T-states + machine wait states
     inline void out(uint16_t port, uint8_t val) {
-        add_cycles(4 + bus_ptr->get_io_wait_states(port));
+        int wait_states = bus_ptr->get_io_wait_states(port);
+        int contention = bus_ptr->get_contention_wait_states(port, cycle_in_m, current_m_cycle);
+        add_cycles(4 + wait_states + contention);
+        cycle_in_m += 4;
+        if (cycle_in_m >= 4) {
+            cycle_in_m = 0;
+            current_m_cycle++;
+        }
         bus_ptr->out_(port, val);
     }
 
@@ -145,18 +182,21 @@ public:
     void set_bus(Bus* new_bus);
 
     // --------------------------------------------------------
-    // Public state — accessible to handlers
-    // --------------------------------------------------------
+// Public state — accessible to handlers
     Registers regs;
     uint8_t   current_opcode = 0;
     bool      prefix_ix = false;   // true = DD prefix (IX), false = FD prefix (IY)
     Bus*      bus_ptr   = nullptr;
-    int       total_cycles     = 0;
-    int       instruction_count = 0;
+    uint64_t   total_cycles     = 0;
+    uint64_t   instruction_count = 0;
     bool      halted           = false;
     bool      interrupt_pending = false;
     bool      nmi_pending       = false;
     uint8_t   interrupt_data    = 0xFF;
+
+    // M-cycle tracking for per-cycle contention (ZX Spectrum, etc.)
+    int       current_m_cycle = 0;    // Current M-cycle number within instruction
+    int       cycle_in_m = 0;          // Position within current M-cycle (T-state 0-3)
 
 
     // Pre-fetched values for DDCB/FDCB instructions (avoids double-read)

@@ -292,22 +292,41 @@ void handle_daa(Z80& cpu) {
     uint8_t f = cpu.regs.F;
     uint8_t correction = 0;
     uint8_t new_c = f & Flags::C;
-    uint8_t h = 0;
 
-    if ((f & Flags::H) || ((a & 0x0F) > 9)) {
-        correction |= 0x06;
-    }
-    
-    if ((f & Flags::C) || (a > 0x99)) {
-        correction |= 0x60;
-        new_c = Flags::C;
+    // Determine if half-carry should be set after DAA
+    // For addition: H is set if ((A & 0x0F) + (correction & 0x0F)) > 0x0F
+    // For subtraction: H is set if ((A & 0x0F) - (correction & 0x0F)) < 0 (borrow)
+    uint8_t h = 0;
+    uint8_t al = a & 0x0F;
+
+    if ((f & Flags::N) == 0) {
+        // After addition
+        if ((f & Flags::H) || al > 9) {
+            correction |= 0x06;
+        }
+        if ((f & Flags::C) || a > 0x99) {
+            correction |= 0x60;
+            new_c = Flags::C;
+        }
+        // Half-carry after addition: was there a half-carry from the correction?
+        if ((al + (correction & 0x0F)) > 0x0F) h = Flags::H;
+    } else {
+        // After subtraction
+        if ((f & Flags::H) || al > 9) {
+            correction |= 0x06;
+        }
+        if ((f & Flags::C) || a > 0x99) {
+            correction |= 0x60;
+            new_c = Flags::C;
+        }
+        // Half-carry after subtraction: was there a half-borrow from the correction?
+        // H is set if lower nibble of A was < lower nibble of correction (before subtraction)
+        if (al < (correction & 0x0F)) h = Flags::H;
     }
 
     if (f & Flags::N) {
-        if ((f & Flags::H) && (a & 0x0F) < 6) h = Flags::H;
         a -= correction;
     } else {
-        if ((a & 0x0F) > 9) h = Flags::H;
         a += correction;
     }
 
@@ -514,118 +533,81 @@ void handle_dd_fd_ld_ixd_n(Z80& cpu) {
     cpu.write(addr, val);
 }
 
-// ADD A, IXH/IXL (DD prefix)
-void handle_dd_fd_add_a_ixhl(Z80& cpu) {
+// Unified ALU handler for IXH/IXL operations
+// Handles: ADD, ADC, SUB, SBC, AND, OR, XOR, CP with IXH/IYH and IXL/IYL
+// Opcodes:
+//   0x84/0x85: ADD A, IXH/IXL - (opcode >> 4) & 0xF = 0x8, bit 3 = 0
+//   0x8C/0x8D: ADC A, IXH/IXL - (opcode >> 4) & 0xF = 0x8, bit 3 = 1
+//   0x94/0x95: SUB A, IXH/IXL - (opcode >> 4) & 0xF = 0x9, bit 3 = 0
+//   0x9C/0x9D: SBC A, IXH/IXL - (opcode >> 4) & 0xF = 0x9, bit 3 = 1
+//   0xA4/0xA5: AND A, IXH/IXL - (opcode >> 4) & 0xF = 0xA, bit 2 = 0
+//   0xAC/0xAD: XOR A, IXH/IXL - (opcode >> 4) & 0xF = 0xA, bit 2 = 1
+//   0xB4/0xB5: OR A, IXH/IXL - (opcode >> 4) & 0xF = 0xB, bit 2 = 0
+//   0xBC/0xBD: CP A, IXH/IXL - (opcode >> 4) & 0xF = 0xB, bit 2 = 1
+void handle_dd_fd_alu_ixhl(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0x84) ? 8 : 9;  // 0x84=ADD A,IXH, 0x85=ADD A,IXL
+
+    // Determine register: 8 = IXH/IYH, 9 = IXL/IYL (bit 0: 0=high, 1=low)
+    int reg = (opcode & 1) ? 9 : 8;
     uint8_t val = cpu.read_reg8(reg);
     uint8_t a = cpu.regs.A;
-    uint16_t res = a + val;
-    uint8_t r = res & 0xFF;
-    uint8_t h = ((a & 0x0F) + (val & 0x0F)) > 0x0F ? Flags::H : 0;
-    uint8_t pv = (~(a ^ val) & (a ^ r) & 0x80) ? Flags::PV : 0;
-    cpu.regs.A = r;
-    cpu.regs.F = (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | h | pv |
-                 (res > 0xFF ? Flags::C : 0);
-}
 
-// ADC A, IXH/IXL (DD prefix) - includes carry
-void handle_dd_fd_adc_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0x8C) ? 8 : 9;  // 0x8C=ADC A,IXH, 0x8D=ADC A,IXL
-    uint8_t val = cpu.read_reg8(reg);
-    uint8_t a = cpu.regs.A;
-    uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
-    uint16_t res = a + val + carry;
-    uint8_t r = res & 0xFF;
-    uint8_t h = ((a & 0x0F) + (val & 0x0F) + carry) > 0x0F ? Flags::H : 0;
-    uint8_t pv = (~(a ^ val) & (a ^ r) & 0x80) ? Flags::PV : 0;
-    cpu.regs.A = r;
-    cpu.regs.F = (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | h | pv |
-                 (res > 0xFF ? Flags::C : 0);
-}
+    uint8_t op_group = (opcode >> 4) & 0x0F;  // 0x8, 0x9, 0xA, or 0xB
 
-// SUB A, IXH/IXL
-void handle_dd_fd_sub_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0x94) ? 8 : 9;
-    uint8_t val = cpu.read_reg8(reg);
-    uint8_t a = cpu.regs.A;
-    uint16_t res = a - val;
-    uint8_t r = res & 0xFF;
-    uint8_t h = (a & 0x0F) < (val & 0x0F) ? Flags::H : 0;
-    uint8_t pv = (a ^ val) & (a ^ r) & 0x80 ? Flags::PV : 0;
-    cpu.regs.A = r;
-    cpu.regs.F = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | h | pv |
-                 (val > a ? Flags::C : 0);
-}
-
-// SBC A, IXH/IXL (DD prefix) - includes carry
-void handle_dd_fd_sbc_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0x9C) ? 8 : 9;  // 0x9C=SBC A,IXH, 0x9D=SBC A,IXL
-    uint8_t val = cpu.read_reg8(reg);
-    uint8_t a = cpu.regs.A;
-    uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
-    uint16_t res = a - val - carry;
-    uint8_t r = res & 0xFF;
-    uint8_t h = (a & 0x0F) < ((val & 0x0F) + carry) ? Flags::H : 0;
-    uint8_t pv = (a ^ val) & (a ^ r) & 0x80 ? Flags::PV : 0;
-    cpu.regs.A = r;
-    cpu.regs.F = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | h | pv |
-                 (val + carry > a ? Flags::C : 0);
-}
-
-// AND A, IXH/IXL  
-void handle_dd_fd_and_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0xA4) ? 8 : 9;
-    uint8_t val = cpu.read_reg8(reg);
-    cpu.regs.A &= val;
-    uint8_t r = cpu.regs.A;
-    cpu.regs.F = Flags::H | (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | FlagTables::PARITY_TABLE[r];
-}
-
-// OR A, IXH/IXL
-void handle_dd_fd_or_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0xB4) ? 8 : 9;
-    uint8_t val = cpu.read_reg8(reg);
-    cpu.regs.A |= val;
-    uint8_t r = cpu.regs.A;
-    cpu.regs.F = (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | FlagTables::PARITY_TABLE[r];
-}
-
-// XOR A, IXH/IXL
-void handle_dd_fd_xor_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0xAC) ? 8 : 9;
-    uint8_t val = cpu.read_reg8(reg);
-    cpu.regs.A ^= val;
-    uint8_t r = cpu.regs.A;
-    cpu.regs.F = (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | FlagTables::PARITY_TABLE[r];
-}
-
-// CP A, IXH/IXL  
-void handle_dd_fd_cp_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0xBC) ? 8 : 9;
-    uint8_t val = cpu.read_reg8(reg);
-    uint8_t a = cpu.regs.A;
-    uint16_t res = a - val;
-    uint8_t r = res & 0xFF;
-    uint8_t h = (a & 0x0F) < (val & 0x0F) ? Flags::H : 0;
-    uint8_t pv = (a ^ val) & (a ^ r) & 0x80 ? Flags::PV : 0;
-    cpu.regs.F = Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
-                 (r == 0 ? Flags::Z : 0) | h | pv |
-                 (val > a ? Flags::C : 0);
+    if (op_group == 0x8) {
+        // ADD or ADC (bit 3 determines which)
+        if (opcode & 0x08) {
+            // ADC: bit 3 = 1
+            uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
+            uint16_t res = a + val + carry;
+            cpu.regs.F = calc_adc_flags(a, val, carry, res);
+            cpu.regs.A = res & 0xFF;
+        } else {
+            // ADD: bit 3 = 0
+            uint16_t res = a + val;
+            cpu.regs.F = calc_add_flags(a, val);
+            cpu.regs.A = res & 0xFF;
+        }
+    } else if (op_group == 0x9) {
+        // SUB or SBC (bit 3 determines which)
+        if (opcode & 0x08) {
+            // SBC: bit 3 = 1
+            uint8_t carry = (cpu.regs.F & Flags::C) ? 1 : 0;
+            uint16_t res = a - val - carry;
+            cpu.regs.F = calc_sbc_flags(a, val, carry, res);
+            cpu.regs.A = res & 0xFF;
+        } else {
+            // SUB: bit 3 = 0
+            uint16_t res = a - val;
+            cpu.regs.F = calc_sub_flags(a, val);
+            cpu.regs.A = res & 0xFF;
+        }
+    } else if (op_group == 0xA) {
+        // AND or XOR (bit 2 determines which)
+        if (opcode & 0x04) {
+            // XOR: bit 2 = 1
+            cpu.regs.A ^= val;
+        } else {
+            // AND: bit 2 = 0
+            cpu.regs.A &= val;
+        }
+        cpu.regs.F = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
+                     (cpu.regs.A == 0 ? Flags::Z : 0) | Flags::H |
+                     FlagTables::PARITY_TABLE[cpu.regs.A];
+    } else {  // op_group == 0xB
+        // OR or CP (bit 2 determines which)
+        if (opcode & 0x04) {
+            // CP: bit 2 = 1 (doesn't modify A)
+            cpu.regs.F = Flags::N | (calc_sub_flags(a, val) & ~(Flags::N)) | (val & (Flags::F5 | Flags::F3));
+        } else {
+            // OR: bit 2 = 0
+            cpu.regs.A |= val;
+            cpu.regs.F = (cpu.regs.A & (Flags::S | Flags::F5 | Flags::F3)) |
+                         (cpu.regs.A == 0 ? Flags::Z : 0) |
+                         FlagTables::PARITY_TABLE[cpu.regs.A];
+        }
+    }
+    cpu.regs.Q = cpu.regs.F;
 }
 
 void handle_dd_fd_add_a_ixd(Z80& cpu) {
@@ -798,39 +780,25 @@ void handle_dd_fd_dec_ix(Z80& cpu) {
     else               cpu.regs.IY--;
 }
 
-// INC IXH / INC IXL (DD prefix)
-void handle_dd_fd_inc_ixhl(Z80& cpu) {
+// Unified INC/DEC handler for IXH/IXL (and IYH/IYL)
+// Handles: INC IXH, DEC IXH, INC IXL, DEC IXL
+void handle_dd_fd_inc_dec_ixhl(Z80& cpu) {
     uint8_t opcode = cpu.current_opcode;
-    // opcode: 0x24 = INC IXH, 0x2C = INC IXL
-    int reg = (opcode == 0x24) ? 8 : 9;  // 8=IXH, 9=IXL
-    uint8_t val = cpu.read_reg8(reg);
-    uint8_t res = (val + 1) & 0xFF;
-    cpu.write_reg8(reg, res);
-    // Set flags
-    uint8_t f = cpu.regs.F & Flags::C;
-    f |= (res & (Flags::S | Flags::F5 | Flags::F3));
-    if (res == 0) f |= Flags::Z;
-    if (val == 0x7F) f |= Flags::PV;  // overflow
-    if ((val & 0x0F) == 0x0F) f |= Flags::H;  // half carry
-    cpu.regs.F = f;
-    cpu.regs.Q = f;
-}
+    // Determine register: even opcodes (0x24/0x25) = IXH, odd (0x2C/0x2D) = IXL
+    int reg = (opcode & 0x08) ? 9 : 8;  // bit 3: 0 = IXH, 1 = IXL
+    bool is_inc = (opcode & 1) == 0;    // bit 0: 0 = INC, 1 = DEC
 
-// DEC IXH / DEC IXL
-void handle_dd_fd_dec_ixhl(Z80& cpu) {
-    uint8_t opcode = cpu.current_opcode;
-    int reg = (opcode == 0x25) ? 8 : 9;  // 0x25=DEC IXH, 0x2D=DEC IXL
     uint8_t val = cpu.read_reg8(reg);
-    uint8_t res = (val - 1) & 0xFF;
+    uint8_t res = is_inc ? (val + 1) & 0xFF : (val - 1) & 0xFF;
     cpu.write_reg8(reg, res);
-    // Set flags
-    uint8_t f = (cpu.regs.F & Flags::C) | Flags::N;
-    f |= (res & (Flags::S | Flags::F5 | Flags::F3));
-    if (res == 0) f |= Flags::Z;
-    if (val == 0x80) f |= Flags::PV;  // overflow
-    if ((val & 0x0F) == 0x00) f |= Flags::H;  // half borrow
-    cpu.regs.F = f;
-    cpu.regs.Q = f;
+
+    // Set flags using centralized helpers
+    if (is_inc) {
+        cpu.regs.F = (cpu.regs.F & Flags::C) | calc_inc_flags(val);
+    } else {
+        cpu.regs.F = (cpu.regs.F & Flags::C) | calc_dec_flags(val);
+    }
+    cpu.regs.Q = cpu.regs.F;
 }
 
 void handle_dd_fd_add_ix_rr(Z80& cpu) {

@@ -167,8 +167,7 @@ void handle_dd_fd_ld_nn_ix(Z80&);
 void handle_dd_fd_ld_ix_nn_ind(Z80&);
 void handle_dd_fd_inc_ix(Z80&);
 void handle_dd_fd_dec_ix(Z80&);
-void handle_dd_fd_inc_ixhl(Z80&);
-void handle_dd_fd_dec_ixhl(Z80&);
+void handle_dd_fd_inc_dec_ixhl(Z80&);  // Unified INC/DEC for IXH/IXL/IYH/IYL
 void handle_dd_fd_ld_sp_ix(Z80&);
 void handle_dd_fd_push_ix(Z80&);
 void handle_dd_fd_pop_ix(Z80&);
@@ -187,15 +186,8 @@ void handle_dd_fd_dec_ixd(Z80&);
 void handle_ld_ixhl_r(Z80&);
 void handle_ld_ixhl_n(Z80&);
 
-// DD/FD ALU with IXH/IXL
-void handle_dd_fd_add_a_ixhl(Z80&);
-void handle_dd_fd_adc_ixhl(Z80&);
-void handle_dd_fd_sub_ixhl(Z80&);
-void handle_dd_fd_sbc_ixhl(Z80&);
-void handle_dd_fd_and_ixhl(Z80&);
-void handle_dd_fd_or_ixhl(Z80&);
-void handle_dd_fd_xor_ixhl(Z80&);
-void handle_dd_fd_cp_ixhl(Z80&);
+// DD/FD ALU with IXH/IXL (unified handler for ADD/ADC/SUB/SBC/AND/OR/XOR/CP)
+void handle_dd_fd_alu_ixhl(Z80&);
 
 // DD/FD ALU with (IX+d)/(IY+d)
 void handle_dd_fd_add_a_ixd(Z80&);

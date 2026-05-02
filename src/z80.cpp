@@ -54,6 +54,8 @@ void Z80::reset() {
     interrupt_data = 0;
     current_opcode = 0;
     prefix_ix = false;
+    current_m_cycle = 0;
+    cycle_in_m = 0;
 }
 
 // ============================================================
@@ -199,6 +201,10 @@ int Z80::step() {
 // Execute single instruction
 // ============================================================
 void Z80::execute_instruction() {
+    // Reset M-cycle tracking for this instruction
+    current_m_cycle = 0;
+    cycle_in_m = 0;
+
     // 1. EI two-phase enable (Part A):
     // If EI was executed in the PREVIOUS instruction, EI_JUST_RESOLVED is true.
     // We clear it here so it doesn't affect the instruction FOLLOWING this one.

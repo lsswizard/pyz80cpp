@@ -89,20 +89,20 @@ class Z80TestHarness:
         # CP/M .COM files:
         # - Entry at 0x0100
         # - BDOS called via CALL 5 (bytes: CD 05 00)
-        
+
         # BDOS entry point - set up jump to our hook
         HOOK_ADDR = 0xF000
         self.cpu.write_byte(0x0005, 0xC3)  # JP HOOK_ADDR
         self.cpu.write_byte(0x0006, HOOK_ADDR & 0xFF)
         self.cpu.write_byte(0x0007, HOOK_ADDR >> 8)
-        
+
         # At HOOK_ADDR, we put a RET. When we detect PC == HOOK_ADDR, we handle BDOS and then let it RET.
         self.cpu.write_byte(HOOK_ADDR, 0xC9)  # RET
 
         # Initialize registers
         self.cpu.registers.PC = 0x0100
         self.cpu.registers.SP = 0xFFFE
-        
+
         # Push program exit address (0x0000 - when popped by program final RET, PC=0 and we exit)
         self.cpu.write_byte(0xFFFE, 0x00)
         self.cpu.write_byte(0xFFFF, 0x00)
@@ -115,13 +115,15 @@ class Z80TestHarness:
         cursor_x = 0
 
         while not completed and cycles < max_cycles:
-            # Check for BDOS hook BEFORE step
+            # Execute one instruction
+            t = self.cpu.step()
+            cycles += t
+
+            # Check for BDOS hook AFTER step
             if self.cpu.registers.PC == HOOK_ADDR:
                 c = self.cpu.registers.C
                 if c == 2:  # BDOS function 2: print char (E = char)
                     char = self.cpu.registers.E
-                    sys.stdout.write(chr(char))
-                    sys.stdout.flush()
                     if char == 0x0A:  # LF
                         lines += 1
                         if cursor_x > columns: columns = cursor_x
@@ -131,10 +133,11 @@ class Z80TestHarness:
                         cursor_x += 1
                 elif c == 9:  # BDOS function 9: print string (DE = string addr, $ terminated)
                     de = self.cpu.registers.DE
-                    while self.read_mem(de) != 0x24:  # $ terminator
+                    count = 0
+                    while count < 255:  # Limit string length like the C version
                         char = self.read_mem(de)
-                        sys.stdout.write(chr(char))
-                        sys.stdout.flush()
+                        if char == 0x24:  # $ terminator
+                            break
                         if char == 0x0A:  # LF
                             lines += 1
                             if cursor_x > columns: columns = cursor_x
@@ -143,12 +146,12 @@ class Z80TestHarness:
                             hash_val = fnv1_32(bytes([char]), hash_val)
                             cursor_x += 1
                         de = (de + 1) & 0xFFFF
+                        count += 1
                 elif c == 0:  # BDOS function 0: program terminate
                     completed = True
                     break
-
-            t = self.cpu.step()
-            cycles += t
+                # After handling BDOS, the RET at HOOK_ADDR will execute
+                # and PC will move to the next instruction - continue loop
 
             if self.cpu.halted:
                 completed = True
@@ -261,12 +264,18 @@ class TestZ80Exerciser:
             pytest.skip("zexdoc.com not found.")
 
         harness.load_cpm(data)
-        # ZEXDOC takes a LONG time (~46B cycles), we limit it for CI
-        cycles, hash_val, lines, columns = harness.run_cpm(max_cycles=10_000_000)
+        # ZEXDOC requires ~46.7B cycles to complete - too slow for Python test
+        # Run partial test to verify core functionality
+        cycles, hash_val, lines, columns = harness.run_cpm(max_cycles=100_000_000)
 
-        print(f"\nZEXDOC CP/M (Partial):")
+        print(f"\nZEXDOC CP/M (partial):")
         print(f"  Cycles executed: {cycles}")
-        print(f"  Current Hash: {hash_val:08X}")
+        print(f"  Final Hash: {hash_val:08X}")
+        print(f"  PC: {harness.cpu.registers.PC:04X}")
+
+        # Verify core is executing (not hung) - PC should have progressed
+        assert cycles > 50_000_000, "Core not executing enough cycles"
+        assert harness.cpu.registers.PC != 0x0100, "PC never moved from start"
 
     def test_zexall_cpm(self, harness, search_paths):
         """Test ZEXALL CP/M exerciser."""
@@ -275,12 +284,18 @@ class TestZ80Exerciser:
             pytest.skip("zexall.com not found.")
 
         harness.load_cpm(data)
-        # ZEXALL also takes a long time
-        cycles, hash_val, lines, columns = harness.run_cpm(max_cycles=10_000_000)
+        # ZEXALL requires ~46.7B cycles to complete - too slow for Python test
+        # Run partial test to verify core functionality
+        cycles, hash_val, lines, columns = harness.run_cpm(max_cycles=100_000_000)
 
-        print(f"\nZEXALL CP/M (Partial):")
+        print(f"\nZEXALL CP/M (partial):")
         print(f"  Cycles executed: {cycles}")
-        print(f"  Current Hash: {hash_val:08X}")
+        print(f"  Final Hash: {hash_val:08X}")
+        print(f"  PC: {harness.cpu.registers.PC:04X}")
+
+        # Verify core is executing (not hung) - PC should have progressed
+        assert cycles > 50_000_000, "Core not executing enough cycles"
+        assert harness.cpu.registers.PC != 0x0100, "PC never moved from start"
 
 
 if __name__ == "__main__":

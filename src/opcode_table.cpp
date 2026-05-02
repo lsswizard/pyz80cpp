@@ -602,17 +602,17 @@ void OpcodeTable::init() {
     dd_table[0x2B] = Instruction(handle_dd_fd_dec_ix, 10, 2, false);  // DEC IX
     fd_table[0x2B] = Instruction(handle_dd_fd_dec_ix, 10, 2, false);  // DEC IY
     
-    // INC/DEC IXH and IXL (DD prefix)
-    dd_table[0x24] = Instruction(handle_dd_fd_inc_ixhl, 8, 2, true);  // INC IXH
-    dd_table[0x25] = Instruction(handle_dd_fd_dec_ixhl, 8, 2, true);   // DEC IXH
-    dd_table[0x2C] = Instruction(handle_dd_fd_inc_ixhl, 8, 2, true);   // INC IXL
-    dd_table[0x2D] = Instruction(handle_dd_fd_dec_ixhl, 8, 2, true);   // DEC IXL
-    
+    // INC/DEC IXH and IXL (DD prefix) - unified handler
+    dd_table[0x24] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);  // INC IXH
+    dd_table[0x25] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);   // DEC IXH
+    dd_table[0x2C] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);   // INC IXL
+    dd_table[0x2D] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);   // DEC IXL
+
     // Same for FD prefix
-    fd_table[0x24] = Instruction(handle_dd_fd_inc_ixhl, 8, 2, true);  // INC IYH
-    fd_table[0x25] = Instruction(handle_dd_fd_dec_ixhl, 8, 2, true);   // DEC IYH
-    fd_table[0x2C] = Instruction(handle_dd_fd_inc_ixhl, 8, 2, true);   // INC IYL
-    fd_table[0x2D] = Instruction(handle_dd_fd_dec_ixhl, 8, 2, true);   // DEC IYL
+    fd_table[0x24] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);  // INC IYH
+    fd_table[0x25] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);   // DEC IYH
+    fd_table[0x2C] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);   // INC IYL
+    fd_table[0x2D] = Instruction(handle_dd_fd_inc_dec_ixhl, 8, 2, true);   // DEC IYL
     
     dd_table[0x09] = Instruction(handle_dd_fd_add_ix_rr, 15, 2, false);  // ADD IX, BC
     fd_table[0x09] = Instruction(handle_dd_fd_add_ix_rr, 15, 2, false);  // ADD IY, BC
@@ -666,27 +666,27 @@ void OpcodeTable::init() {
 
     // ADD A, IXH/IXL (0x84/0x85) and similar arithmetic on IXH/IXL
     // These take precedence over indexed (IX+d) versions
-    dd_table[0x84] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADD A, IXH
-    dd_table[0x85] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADD A, IXL
-    dd_table[0x8C] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADC A, IXH
-    dd_table[0x8D] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADC A, IXL
-    
-    dd_table[0x94] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);    // SUB A, IXH
-    dd_table[0x95] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);    // SUB A, IXL
-    dd_table[0x9C] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);    // SBC A, IXH
-    dd_table[0x9D] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);    // SBC A, IXL
-    
-    dd_table[0xA4] = Instruction(handle_dd_fd_and_ixhl, 8, 2, false);   // AND A, IXH
-    dd_table[0xA5] = Instruction(handle_dd_fd_and_ixhl, 8, 2, false);   // AND A, IXL
-    
-    dd_table[0xB4] = Instruction(handle_dd_fd_or_ixhl, 8, 2, false);    // OR A, IXH
-    dd_table[0xB5] = Instruction(handle_dd_fd_or_ixhl, 8, 2, false);    // OR A, IXL
-    
-    dd_table[0xAC] = Instruction(handle_dd_fd_xor_ixhl, 8, 2, false);    // XOR A, IXH
-    dd_table[0xAD] = Instruction(handle_dd_fd_xor_ixhl, 8, 2, false);    // XOR A, IXL
-    
-    dd_table[0xBC] = Instruction(handle_dd_fd_cp_ixhl, 8, 2, true);     // CP A, IXH
-    dd_table[0xBD] = Instruction(handle_dd_fd_cp_ixhl, 8, 2, true);     // CP A, IXL
+    dd_table[0x84] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADD A, IXH
+    dd_table[0x85] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADD A, IXL
+    dd_table[0x8C] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADC A, IXH
+    dd_table[0x8D] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADC A, IXL
+
+    dd_table[0x94] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // SUB A, IXH
+    dd_table[0x95] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // SUB A, IXL
+    dd_table[0x9C] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // SBC A, IXH
+    dd_table[0x9D] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // SBC A, IXL
+
+    dd_table[0xA4] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // AND A, IXH
+    dd_table[0xA5] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // AND A, IXL
+
+    dd_table[0xB4] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // OR A, IXH
+    dd_table[0xB5] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // OR A, IXL
+
+    dd_table[0xAC] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // XOR A, IXH
+    dd_table[0xAD] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);    // XOR A, IXL
+
+    dd_table[0xBC] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);     // CP A, IXH
+    dd_table[0xBD] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);     // CP A, IXL
     
     // ADD/SUB/AND/OR/XOR/CP A,(IX+d) - 0x86,0x8E,0x96,0x9E,0xA6,0xAE,0xB6,0xBE with displacement
     // ADD A,(IX+d): DD 86 dd
@@ -700,22 +700,22 @@ void OpcodeTable::init() {
     dd_table[0xBE] = Instruction(handle_dd_fd_cp_ixd, 19, 3, true);      // CP A,(IX+d)
     
     // Same for FD prefix (IYH/IYL)
-    fd_table[0x84] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADD A, IYH
-    fd_table[0x85] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADD A, IYL
-    fd_table[0x8C] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADC A, IYH
-    fd_table[0x8D] = Instruction(handle_dd_fd_add_a_ixhl, 8, 2, true);   // ADC A, IYL
-    fd_table[0x94] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);
-    fd_table[0x95] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);
-    fd_table[0x9C] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);
-    fd_table[0x9D] = Instruction(handle_dd_fd_sub_ixhl, 8, 2, true);
-    fd_table[0xA4] = Instruction(handle_dd_fd_and_ixhl, 8, 2, false);
-    fd_table[0xA5] = Instruction(handle_dd_fd_and_ixhl, 8, 2, false);
-    fd_table[0xB4] = Instruction(handle_dd_fd_or_ixhl, 8, 2, false);
-    fd_table[0xB5] = Instruction(handle_dd_fd_or_ixhl, 8, 2, false);
-    fd_table[0xAC] = Instruction(handle_dd_fd_xor_ixhl, 8, 2, false);
-    fd_table[0xAD] = Instruction(handle_dd_fd_xor_ixhl, 8, 2, false);
-    fd_table[0xBC] = Instruction(handle_dd_fd_cp_ixhl, 8, 2, true);
-    fd_table[0xBD] = Instruction(handle_dd_fd_cp_ixhl, 8, 2, true);
+    fd_table[0x84] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADD A, IYH
+    fd_table[0x85] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADD A, IYL
+    fd_table[0x8C] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADC A, IYH
+    fd_table[0x8D] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);   // ADC A, IYL
+    fd_table[0x94] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0x95] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0x9C] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0x9D] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xA4] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xA5] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xB4] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xB5] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xAC] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xAD] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xBC] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
+    fd_table[0xBD] = Instruction(handle_dd_fd_alu_ixhl, 8, 2, true);
     
     // ADD/SUB/AND/OR/XOR/CP A,(IY+d) - same as DD but for IY
     fd_table[0x86] = Instruction(handle_dd_fd_add_a_ixd, 19, 3, true);  // ADD A,(IY+d)

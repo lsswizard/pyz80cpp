@@ -164,18 +164,13 @@ endif()
 # ============================================================
 if(BUILD_TESTS)
     enable_testing()
-    find_package(GTest QUIET)
-    
-    if(GTest_FOUND)
-        add_executable(z80_tests
-            tests/test_z80.cpp
-            tests/test_runner.cpp
-        )
-        target_link_libraries(z80_tests PRIVATE z80_core GTest::GTest GTest::Main)
-        add_test(NAME z80_tests COMMAND z80_tests)
-    else()
-        message(WARNING "GTest not found, skipping tests")
-    endif()
+
+    # Z80 Exerciser test (runs ZEXDOC/ZEXALL directly in C++)
+    add_executable(z80_exerciser tests/test_exerciser.cpp)
+    target_link_libraries(z80_exerciser PRIVATE z80_core_lib)
+    add_test(NAME z80_exerciser COMMAND z80_exerciser
+        tests/z80_tests/zexdoc.com
+        tests/z80_tests/zexall.com)
 endif()
 
 # ============================================================

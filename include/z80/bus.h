@@ -35,9 +35,17 @@ public:
     // Interrupt acknowledge — return the vector byte placed on the data bus.
     virtual uint8_t interrupt_acknowledge() { return 0xFF; }
 
-    // Optional wait-state queries
+    // Optional wait-state queries (legacy - for flat wait states per access)
     virtual int get_memory_wait_states(uint16_t addr) { (void)addr; return 0; }
     virtual int get_io_wait_states(uint16_t port)     { (void)port; return 0; }
+
+    // Per-M-cycle contention (for cycle-accurate machines like ZX Spectrum)
+    // cycle_in_m = position within current M-cycle (0 = first T-state)
+    // Returns additional wait states for this specific cycle
+    virtual int get_contention_wait_states(uint16_t addr, int cycle_in_m, int m_cycle_number) {
+        (void)addr; (void)cycle_in_m; (void)m_cycle_number;
+        return get_memory_wait_states(addr);
+    }
 
     virtual std::string debug_info() const { return {}; }
 };
