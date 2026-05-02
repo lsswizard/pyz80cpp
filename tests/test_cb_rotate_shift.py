@@ -2,9 +2,9 @@
 """Comprehensive CB prefix (rotate/shift) instruction tests."""
 import pytest
 from conftest import (
-    write_program, cpu, run_cb_instruction,
-    FLAG_S, FLAG_Z, FLAG_F5, FLAG_H, FLAG_F3, FLAG_PV, FLAG_N, FLAG_C,
-    assert_flags, flag_set, flag_clear, _parity
+    run_cb_instruction,
+    FLAG_S, FLAG_Z, FLAG_H, FLAG_PV, FLAG_N, FLAG_C,
+    flag_set, flag_clear
 )
 
 

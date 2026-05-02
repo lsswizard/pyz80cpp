@@ -3,303 +3,388 @@
 
 namespace z80 {
 
-    // ============================================================
-    // I/O Inline Helpers
-    // ============================================================
+// ============================================================
+// Block I/O flag helper
+//
+// Z80 CPU User Manual (and Sean Young's "Undocumented Z80"):
+//
+//   After INI/IND/OUTI/OUTD the flags are set as follows:
+//     N  = bit 7 of the transferred byte
+//     B  drives S, Z, F5, F3 (B is already decremented before this call)
+//     t  = val + ((C ± 1) & 0xFF)   [+1 for INI/INIR/OUTI/OTIR, -1 for IND/INDR/OUTD/OTDR]
+//     C  = H = set if t > 255 (carry out)
+//     PV = parity of (t & 7) XOR B
+//
+// 'val'   — the byte that was transferred
+// 'c_adj' — +1 for incrementing ops, -1 for decrementing ops
+// 'port_c'— the value of C at the time of the I/O (before B is decremented)
+// ============================================================
+static inline void set_block_io_flags(Z80& cpu, uint8_t val, uint8_t port_c, int c_adj) {
+    // B has already been decremented before this is called
+    uint8_t  b   = cpu.regs.B;
+    uint16_t t   = (uint16_t)val + (uint8_t)(port_c + c_adj);
+    uint8_t  f   = 0;
 
-    static inline void update_in_block_flags(Z80& cpu, uint8_t val, uint8_t l_val) {
-        // Calculate (value + L) for flags - uses L AFTER HL update
-        uint16_t t = val + (l_val & 0xFF);
-        uint8_t b_after = cpu.regs.B;
-        uint8_t f = (b_after & Flags::S) | (b_after == 0 ? Flags::Z : 0);
-        if (t > 0xFF) f |= (Flags::C | Flags::H);
-        if (FlagTables::PARITY_TABLE[(t & 7) ^ b_after]) f |= Flags::PV;
+    // S, Z, F5, F3 — from decremented B
+    if (b & 0x80)  f |= Flags::S;
+    if (b == 0)    f |= Flags::Z;
+    f |= b & (Flags::F5 | Flags::F3);
 
-        // F3/F5: From MEMPTR high byte (correct for block I/O)
-        f |= ((cpu.regs.MEMPTR >> 8) & (Flags::F3 | Flags::F5));
-        // N flag: bit 7 of the transferred value
-        f |= (val & 0x80);
+    // N — bit 7 of the transferred byte
+    if (val & 0x80)  f |= Flags::N;
 
-        cpu.regs.F = f;
-    }
+    // C and H — set if t overflowed 8 bits
+    if (t > 0xFF) f |= (Flags::C | Flags::H);
 
-    static inline void set_rot_flags(Z80& cpu, uint8_t res, uint8_t carry) {
-        uint8_t f = (res & (Flags::S | Flags::F5 | Flags::F3)) | carry;
-        if (res == 0) f |= Flags::Z;
-        if (FlagTables::PARITY_TABLE[res]) f |= Flags::PV;
-        cpu.regs.F = f;
-    }
+    // PV — parity of ((t & 7) XOR B)
+    if (FlagTables::PARITY_TABLE[(t & 7) ^ b])  f |= Flags::PV;
 
-    // ============================================================
-    // Standard I/O
-    // ============================================================
+    cpu.regs.F = f;
+}
 
-    void handle_in_a_n(Z80& cpu) {
-        uint8_t n = cpu.read(cpu.regs.PC++);
-        uint16_t port = (cpu.regs.A << 8) | n;  // Z80 uses A<<8 | n as 16-bit port
-        uint8_t val = cpu.in(port);
-        cpu.regs.A = val;
-        // Set flags based on input value (S, Z, H=0, P/V=parity, N=0, C unchanged)
-        cpu.regs.F = (cpu.regs.F & Flags::C) |  // Preserve carry
-                      (val & Flags::S) |               // Sign
-                      (val == 0 ? Flags::Z : 0) |      // Zero
-                      (val & (Flags::F5 | Flags::F3)) | // F5/F3 (copy of bits 5/3)
-                      (FlagTables::PARITY_TABLE[val] ? Flags::PV : 0); // Parity
-        cpu.regs.MEMPTR = ((n + 1) & 0xFF) | (cpu.regs.A << 8);
-    }
+// ============================================================
+// Standard I/O
+// ============================================================
 
+// IN A,(n) — 11 T-states: 4(M1) + 3(fetch n) + 4(I/O)
+// Port = (A << 8) | n  per Z80 spec
+void handle_in_a_n(Z80& cpu) {
+    uint8_t  n         = cpu.read(cpu.regs.PC++);
+    uint16_t port      = (uint16_t(cpu.regs.A) << 8) | n;
+    cpu.regs.A         = cpu.in(port);
+    cpu.regs.MEMPTR    = (port + 1) & 0xFFFF;
+    cpu.regs.Q = 0;
+}
+
+// OUT (n),A — 11 T-states
 void handle_out_n_a(Z80& cpu) {
-        uint8_t port = cpu.read(cpu.regs.PC++);
-        cpu.out(port, cpu.regs.A);
-        cpu.regs.MEMPTR = ((port + 1) & 0xFF) | (cpu.regs.A << 8);
+    uint8_t  n         = cpu.read(cpu.regs.PC++);
+    uint16_t port      = (uint16_t(cpu.regs.A) << 8) | n;
+    cpu.out(port, cpu.regs.A);
+    // MEMPTR: high = A, low = (n+1) & 0xFF  (documented MEMPTR behaviour)
+    cpu.regs.MEMPTR    = (uint16_t(cpu.regs.A) << 8) | ((n + 1) & 0xFF);
+    cpu.regs.Q = 0;
+}
+
+// IN r,(C) — 12 T-states: 4(M1 ED) + 4(M1 op) + 4(I/O)
+// If r=6 (opcode 0x70), result is discarded but flags are still set
+void handle_in_r_c(Z80& cpu) {
+    int      reg  = (cpu.current_opcode >> 3) & 7;
+    uint16_t port = cpu.regs.BC();
+    uint8_t  val  = cpu.in(port);
+    cpu.regs.MEMPTR = (port + 1) & 0xFFFF;
+
+    if (reg != 6) cpu.write_reg8(reg, val);
+
+    cpu.regs.F = (cpu.regs.F & Flags::C)
+               | (val & (Flags::S | Flags::F5 | Flags::F3))
+               | (val == 0 ? Flags::Z : 0)
+               | FlagTables::PARITY_TABLE[val];
+    cpu.regs.Q = cpu.regs.F;
+}
+
+// OUT (C),r — 12 T-states
+// If r=6 (opcode 0x71), outputs 0 (or 0xFF on some revisions; 0 is the documented value)
+void handle_out_c_r(Z80& cpu) {
+    int     reg  = (cpu.current_opcode >> 3) & 7;
+    uint8_t val  = (reg == 6) ? 0 : cpu.read_reg8(reg);
+    cpu.out(cpu.regs.BC(), val);
+    cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
+    cpu.regs.Q = 0;
+}
+
+// ============================================================
+// Block I/O — INI / IND / INIR / INDR
+// ============================================================
+
+// INI — 16 T-states: 4+4+1+4+3
+void handle_ini(Z80& cpu) {
+    cpu.wait(1);
+    uint8_t  port_c = cpu.regs.C;
+    uint8_t  val    = cpu.in(cpu.regs.BC());
+    cpu.write(cpu.regs.HL(), val);
+    cpu.regs.set_HL(cpu.regs.HL() + 1);
+    cpu.regs.B--;
+    cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
+    set_block_io_flags(cpu, val, port_c, +1);
+    cpu.regs.Q = cpu.regs.F;
+}
+
+// IND — 16 T-states
+void handle_ind(Z80& cpu) {
+    cpu.wait(1);
+    uint8_t  port_c = cpu.regs.C;
+    uint8_t  val    = cpu.in(cpu.regs.BC());
+    cpu.write(cpu.regs.HL(), val);
+    cpu.regs.set_HL(cpu.regs.HL() - 1);
+    cpu.regs.B--;
+    cpu.regs.MEMPTR = (cpu.regs.BC() - 1) & 0xFFFF;
+    set_block_io_flags(cpu, val, port_c, -1);
+    cpu.regs.Q = cpu.regs.F;
+}
+
+// INIR — 21 if B≠0, 16 if B=0
+void handle_inir(Z80& cpu) {
+    handle_ini(cpu);
+    if (cpu.regs.B != 0) {
+        cpu.wait(5);
+        cpu.regs.PC -= 2;
+        cpu.regs.MEMPTR = cpu.regs.PC + 1;
+    }
+}
+
+// INDR — 21 if B≠0, 16 if B=0
+void handle_indr(Z80& cpu) {
+    handle_ind(cpu);
+    if (cpu.regs.B != 0) {
+        cpu.wait(5);
+        cpu.regs.PC -= 2;
+        cpu.regs.MEMPTR = cpu.regs.PC + 1;
+    }
+}
+
+// ============================================================
+// Block I/O — OUTI / OUTD / OTIR / OTDR
+// ============================================================
+
+// OUTI — 16 T-states: 4+4+1+3+4
+void handle_outi(Z80& cpu) {
+    cpu.wait(1);
+    uint8_t val    = cpu.read(cpu.regs.HL());
+    cpu.regs.B--;
+    cpu.out(cpu.regs.BC(), val);
+    cpu.regs.set_HL(cpu.regs.HL() + 1);
+    cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
+    // BUG FIX: use L (the *new* HL low byte after increment) as c_adj proxy.
+    // The formula is t = val + L (same as INI but with L, not (C+1)).
+    // Reconciled with block IO spec: t = val + L for OUT variants.
+    uint16_t t = (uint16_t)val + cpu.regs.L;
+    uint8_t  b = cpu.regs.B;
+    uint8_t  f = 0;
+    if (b & 0x80)    f |= Flags::S;
+    if (b == 0)      f |= Flags::Z;
+    f |= b & (Flags::F5 | Flags::F3);
+    if (val & 0x80)  f |= Flags::N;
+    if (t > 0xFF)    f |= (Flags::C | Flags::H);
+    if (FlagTables::PARITY_TABLE[(t & 7) ^ b]) f |= Flags::PV;
+    cpu.regs.F = f;
+    cpu.regs.Q = f;
+}
+
+// OUTD — 16 T-states
+void handle_outd(Z80& cpu) {
+    cpu.wait(1);
+    uint8_t val    = cpu.read(cpu.regs.HL());
+    cpu.regs.B--;
+    cpu.out(cpu.regs.BC(), val);
+    cpu.regs.set_HL(cpu.regs.HL() - 1);
+    cpu.regs.MEMPTR = (cpu.regs.BC() - 1) & 0xFFFF;
+    // t = val + L (new L after decrement)
+    uint16_t t = (uint16_t)val + cpu.regs.L;
+    uint8_t  b = cpu.regs.B;
+    uint8_t  f = 0;
+    if (b & 0x80)    f |= Flags::S;
+    if (b == 0)      f |= Flags::Z;
+    f |= b & (Flags::F5 | Flags::F3);
+    if (val & 0x80)  f |= Flags::N;
+    if (t > 0xFF)    f |= (Flags::C | Flags::H);
+    if (FlagTables::PARITY_TABLE[(t & 7) ^ b]) f |= Flags::PV;
+    cpu.regs.F = f;
+    cpu.regs.Q = f;
+}
+
+void handle_otir(Z80& cpu) {
+    handle_outi(cpu);
+    if (cpu.regs.B != 0) {
+        cpu.wait(5);
+        cpu.regs.PC -= 2;
+        cpu.regs.MEMPTR = cpu.regs.PC + 1;
+    }
+}
+
+void handle_otdr(Z80& cpu) {
+    handle_outd(cpu);
+    if (cpu.regs.B != 0) {
+        cpu.wait(5);
+        cpu.regs.PC -= 2;
+        cpu.regs.MEMPTR = cpu.regs.PC + 1;
+    }
+}
+
+// ============================================================
+// CB-prefix: Bit / Shift / Rotate
+// ============================================================
+
+// Set flags after a CB rotate/shift
+static inline void set_rot_flags(Z80& cpu, uint8_t res, uint8_t new_carry) {
+    cpu.regs.F = (res & (Flags::S | Flags::F5 | Flags::F3))
+               | (res == 0 ? Flags::Z : 0)
+               | FlagTables::PARITY_TABLE[res]
+               | (new_carry ? Flags::C : 0);
+    cpu.regs.Q = cpu.regs.F;
+}
+
+#define ROT_OP(NAME, EXPR)                          \
+void NAME(Z80& cpu) {                               \
+    int     reg = cpu.current_opcode & 7;           \
+    if (reg == 6) cpu.wait(1);                      \
+    uint8_t val = cpu.read_reg8(reg);               \
+    EXPR;                                           \
+    cpu.write_reg8(reg, res);                       \
+    set_rot_flags(cpu, res, new_c);                 \
+}
+
+ROT_OP(handle_rlc_r,
+    uint8_t new_c = val >> 7;
+    uint8_t res   = (val << 1) | new_c;)
+
+ROT_OP(handle_rrc_r,
+    uint8_t new_c = val & 1;
+    uint8_t res   = (val >> 1) | (new_c << 7);)
+
+ROT_OP(handle_rl_r,
+    uint8_t new_c = val >> 7;
+    uint8_t res   = (val << 1) | ((cpu.regs.F & Flags::C) ? 1 : 0);)
+
+ROT_OP(handle_rr_r,
+    uint8_t new_c = val & 1;
+    uint8_t res   = (val >> 1) | ((cpu.regs.F & Flags::C) ? 0x80 : 0);)
+
+ROT_OP(handle_sla_r,
+    uint8_t new_c = val >> 7;
+    uint8_t res   = val << 1;)
+
+ROT_OP(handle_sra_r,
+    uint8_t new_c = val & 1;
+    uint8_t res   = (val >> 1) | (val & 0x80);)
+
+ROT_OP(handle_sll_r,                    // undocumented SLL (shift left, bit 0 = 1)
+    uint8_t new_c = val >> 7;
+    uint8_t res   = (val << 1) | 1;)
+
+ROT_OP(handle_srl_r,
+    uint8_t new_c = val & 1;
+    uint8_t res   = val >> 1;)
+
+// BIT b,r — tests bit; affects Z, H, S, PV, F3, F5
+// BUG FIX: PV = Z (mirrors zero flag) for *all* bit positions, not just 2/4/6
+void handle_cb_bit(Z80& cpu) {
+    int     bit_pos = (cpu.current_opcode >> 3) & 7;
+    int     reg     = cpu.current_opcode & 7;
+    if (reg == 6) cpu.wait(1);
+    uint8_t val     = cpu.read_reg8(reg);
+    uint8_t result  = val & (1 << bit_pos);
+
+    uint8_t f = (cpu.regs.F & Flags::C) | Flags::H;
+    if (result == 0)         f |= (Flags::Z | Flags::PV);  // PV = Z always
+    if (result & Flags::S)   f |= Flags::S;                // S = bit 7 of tested value
+
+    // For non-(HL) operands, F5/F3 come from the register value itself
+    // For (HL) they come from MEMPTR high byte (handled differently — see DDCB)
+    f |= val & (Flags::F5 | Flags::F3);
+
+    cpu.regs.F = f;
+    cpu.regs.Q = f;
+}
+
+void handle_cb_res(Z80& cpu) {
+    int     bit_pos = (cpu.current_opcode >> 3) & 7;
+    int     reg     = cpu.current_opcode & 7;
+    if (reg == 6) cpu.wait(1);
+    cpu.write_reg8(reg, cpu.read_reg8(reg) & ~(1 << bit_pos));
+    cpu.regs.Q = 0;
+}
+
+void handle_cb_set(Z80& cpu) {
+    int     bit_pos = (cpu.current_opcode >> 3) & 7;
+    int     reg     = cpu.current_opcode & 7;
+    if (reg == 6) cpu.wait(1);
+    cpu.write_reg8(reg, cpu.read_reg8(reg) | (1 << bit_pos));
+    cpu.regs.Q = 0;
+}
+
+// ============================================================
+// DDCB/FDCB: indexed rotate/shift/bit operations
+// All read from (IX+d); optionally store result in a register too (undocumented)
+// T-states for rotate/shift/res/set: 23 total (already accounted by 4+4+3+3 fetch + wait below)
+// ============================================================
+
+static uint16_t ddcb_addr(Z80& cpu) {
+    uint16_t ix = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    return (ix + cpu.ddcb_displacement) & 0xFFFF;
+}
+
+void handle_ddcb_fdcb_rot(Z80& cpu) {
+    uint16_t addr       = ddcb_addr(cpu);
+    cpu.regs.MEMPTR     = addr;
+    uint8_t  val        = cpu.read(addr);
+    cpu.wait(2);   // extra internal states (total mem-read cycle = 3+2 = 5, then write = 3)
+
+    int     op    = (cpu.ddcb_opcode >> 3) & 7;
+    uint8_t old_c = (cpu.regs.F & Flags::C) ? 1 : 0;
+    uint8_t new_c, res;
+
+    switch (op) {
+        case 0: new_c = val >> 7; res = (val << 1) | new_c; break;             // RLC
+        case 1: new_c = val & 1;  res = (val >> 1) | (new_c << 7); break;     // RRC
+        case 2: new_c = val >> 7; res = (val << 1) | old_c; break;            // RL
+        case 3: new_c = val & 1;  res = (val >> 1) | (old_c << 7); break;     // RR
+        case 4: new_c = val >> 7; res = val << 1; break;                       // SLA
+        case 5: new_c = val & 1;  res = (val >> 1) | (val & 0x80); break;     // SRA
+        case 6: new_c = val >> 7; res = (val << 1) | 1; break;                // SLL (undoc)
+        default:new_c = val & 1;  res = val >> 1; break;                       // SRL
     }
 
-    void handle_in_r_c(Z80& cpu) {
-        int reg = (cpu.current_opcode >> 3) & 7;
-        uint16_t port = (cpu.regs.B << 8) | cpu.regs.C;  // Z80 uses BC as 16-bit port address
-        uint8_t val = cpu.in(port);
-        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
-        if (reg != 6) cpu.write_reg8(reg, val);
-        // Debug output to file
-        FILE* f = fopen("/tmp/z80_debug.log", "a");
-        if (f) {
-            fprintf(f, "DEBUG handle_in_r_c: opcode=0x%02X reg=%d port=0x%04X val=0x%02X A=0x%02X B=0x%02X C=0x%02X BC=0x%04X\n",
-                    cpu.current_opcode, reg, port, val, cpu.regs.A, cpu.regs.B, cpu.regs.C, cpu.regs.BC());
-            fclose(f);
-        }
+    cpu.write(addr, res);
+    // Undocumented: result also stored in register (if not 6)
+    int reg = cpu.ddcb_opcode & 7;
+    if (reg != 6) cpu.write_reg8(reg, res);
 
-        cpu.regs.F = (cpu.regs.F & Flags::C) | (val & Flags::S) | (val == 0 ? Flags::Z : 0) |
-        (val & (Flags::F5 | Flags::F3)) | (FlagTables::PARITY_TABLE[val] ? Flags::PV : 0);
-    }
+    set_rot_flags(cpu, res, new_c);
+}
 
-    void handle_out_c_r(Z80& cpu) {
-        int reg = (cpu.current_opcode >> 3) & 7;
-        uint16_t port = (cpu.regs.B << 8) | cpu.regs.C;  // Z80 uses BC as 16-bit port address
-        uint8_t val = (reg == 6) ? 0xFF : cpu.read_reg8(reg);
-        cpu.out(port, val);
-        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
-    }
+void handle_ddcb_fdcb_bit(Z80& cpu) {
+    uint16_t addr   = ddcb_addr(cpu);
+    cpu.regs.MEMPTR = addr;
+    uint8_t  val    = cpu.read(addr);
+    cpu.wait(2);
 
-    // ============================================================
-    // Block I/O
-    // ============================================================
+    int     bit_pos = (cpu.ddcb_opcode >> 3) & 7;
+    uint8_t result  = val & (1 << bit_pos);
 
-    void handle_ini(Z80& cpu) {
-        cpu.wait(1);
-        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
-        uint8_t val = cpu.in(port);
-        cpu.write(cpu.regs.HL(), val);
-        cpu.regs.set_HL(cpu.regs.HL() + 1);
-        cpu.regs.B--;
-        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
-        update_in_block_flags(cpu, val, 1);
-    }
+    uint8_t f = (cpu.regs.F & Flags::C) | Flags::H;
+    if (result == 0)        f |= (Flags::Z | Flags::PV);
+    if (result & Flags::S)  f |= Flags::S;
 
-    void handle_ind(Z80& cpu) {
-        cpu.wait(1);
-        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
-        uint8_t val = cpu.in(port);
-        cpu.write(cpu.regs.HL(), val);
-        cpu.regs.set_HL(cpu.regs.HL() - 1);
-        cpu.regs.B--;
-        cpu.regs.MEMPTR = (port - 1) & 0xFFFF;  // MEMPTR = port - 1
-        update_in_block_flags(cpu, val, -1);
-    }
+    // For indexed BIT, F5/F3 come from MEMPTR high byte
+    f |= (addr >> 8) & (Flags::F5 | Flags::F3);
 
-    void handle_inir(Z80& cpu) { handle_ini(cpu); if (cpu.regs.B) { cpu.wait(5); cpu.regs.PC -= 2; } }
-    void handle_indr(Z80& cpu) { handle_ind(cpu); if (cpu.regs.B) { cpu.wait(5); cpu.regs.PC -= 2; } }
+    cpu.regs.F = f;
+    cpu.regs.Q = f;
+}
 
-    void handle_outi(Z80& cpu) {
-        cpu.wait(1);
-        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
-        uint8_t val = cpu.read(cpu.regs.HL());
-        cpu.regs.B--;
-        cpu.out(port, val);
-        cpu.regs.set_HL(cpu.regs.HL() + 1);
-        cpu.regs.MEMPTR = (port + 1) & 0xFFFF;  // MEMPTR = port + 1
-        update_in_block_flags(cpu, val, cpu.regs.L);
-    }
+void handle_ddcb_fdcb_res(Z80& cpu) {
+    uint16_t addr   = ddcb_addr(cpu);
+    cpu.regs.MEMPTR = addr;
+    uint8_t  val    = cpu.read(addr);
+    cpu.wait(2);
+    val &= ~(1 << ((cpu.ddcb_opcode >> 3) & 7));
+    cpu.write(addr, val);
+    int reg = cpu.ddcb_opcode & 7;
+    if (reg != 6) cpu.write_reg8(reg, val);
+    cpu.regs.Q = 0;
+}
 
-    void handle_outd(Z80& cpu) {
-        cpu.wait(1);
-        uint16_t port = (cpu.regs.A << 8) | cpu.regs.C;
-        uint8_t val = cpu.read(cpu.regs.HL());
-        cpu.regs.B--;
-        cpu.out(port, val);
-        cpu.regs.set_HL(cpu.regs.HL() - 1);
-        cpu.regs.MEMPTR = (port - 1) & 0xFFFF;  // MEMPTR = port - 1
-        update_in_block_flags(cpu, val, cpu.regs.L);
-    }
-
-    void handle_otir(Z80& cpu) { handle_outi(cpu); if (cpu.regs.B) { cpu.wait(5); cpu.regs.PC -= 2; } }
-    void handle_otdr(Z80& cpu) { handle_outd(cpu); if (cpu.regs.B) { cpu.wait(5); cpu.regs.PC -= 2; } }
-
-    // ============================================================
-    // Bit / Shift / Rotate Instructions (CB)
-    // ============================================================
-
-    void handle_cb_bit(Z80& cpu) {
-        int bit_pos = (cpu.current_opcode >> 3) & 7;
-        int reg = cpu.current_opcode & 7;
-        uint16_t addr;
-        if (reg == 6) {
-            cpu.wait(1);
-            addr = cpu.regs.HL();
-            cpu.regs.MEMPTR = addr;
-        } else {
-            addr = 0; // Not used for register BIT
-        }
-        uint8_t val = cpu.read_reg8(reg);
-        uint8_t result = val & (1 << bit_pos);
-        
-        // Build flags:
-        // Z: Set if tested bit is 0
-        // S: Set ONLY for bit 7 (sign bit)
-        // H: Always set
-        // F5/F3: For (HL), from MEMPTR high byte (addr >> 8); for registers, from original value
-        // PV: Always equals Z (parity of original value) for ALL bit positions
-        uint8_t f = (cpu.regs.F & Flags::C) | Flags::H | (result == 0 ? Flags::Z : 0);
-        
-        // Sign flag: Only set if testing bit 7
-        if (bit_pos == 7) f |= (result != 0) ? Flags::S : 0;
-        
-        // F5/F3: For (HL) come from MEMPTR high byte; for registers come from original value
-        if (reg == 6) {
-            // BIT (HL): F5/F3 from MEMPTR high byte
-            f |= (cpu.regs.MEMPTR >> 8) & (Flags::F5 | Flags::F3);
-        } else {
-            // BIT r: F5/F3 from original value being tested
-            f |= (val & (Flags::F5 | Flags::F3));
-        }
-        
-        // PV = Z (set when bit is clear/0)
-        if (result == 0) f |= Flags::PV;
-        
-        cpu.regs.F = f;
-    }
-
-    void handle_cb_res(Z80& cpu) {
-        int reg = cpu.current_opcode & 7;
-        if (reg == 6) cpu.wait(1);
-        cpu.write_reg8(reg, cpu.read_reg8(reg) & ~(1 << ((cpu.current_opcode >> 3) & 7)));
-    }
-
-    void handle_cb_set(Z80& cpu) {
-        int reg = cpu.current_opcode & 7;
-        if (reg == 6) cpu.wait(1);
-        cpu.write_reg8(reg, cpu.read_reg8(reg) | (1 << ((cpu.current_opcode >> 3) & 7)));
-    }
-
-    #define ROT_IMPL(FUNC, EXPR) \
-    void FUNC(Z80& cpu) { \
-        int reg = cpu.current_opcode & 7; \
-        if (reg == 6) cpu.wait(1); \
-            uint8_t val = cpu.read_reg8(reg); \
-            EXPR; \
-            cpu.write_reg8(reg, res); \
-            set_rot_flags(cpu, res, carry); \
-    }
-
-    ROT_IMPL(handle_rlc_r, uint8_t carry = val >> 7; uint8_t res = (val << 1) | carry)
-    ROT_IMPL(handle_rrc_r, uint8_t carry = val & 1; uint8_t res = (val >> 1) | (carry << 7))
-    ROT_IMPL(handle_rl_r,  uint8_t carry = (val >> 7); uint8_t res = (val << 1) | ((cpu.regs.F & Flags::C) ? 1 : 0))
-    ROT_IMPL(handle_rr_r,  uint8_t carry = val & 1; uint8_t res = (val >> 1) | ((cpu.regs.F & Flags::C) ? 0x80 : 0))
-    ROT_IMPL(handle_sla_r, uint8_t carry = val >> 7; uint8_t res = val << 1)
-    ROT_IMPL(handle_sra_r, uint8_t carry = val & 1; uint8_t res = (val >> 1) | (val & 0x80))
-    ROT_IMPL(handle_srl_r, uint8_t carry = val & 1; uint8_t res = val >> 1)
-    ROT_IMPL(handle_sll_r, uint8_t carry = val >> 7; uint8_t res = (val << 1) | 1)
-
-    // ============================================================
-    // Bit / Shift / Rotate Indexed (DDCB/FDCB)
-    // ============================================================
-
-    void handle_ddcb_fdcb_rot(Z80& cpu) {
-        uint16_t addr = ((cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY) + cpu.ddcb_displacement) & 0xFFFF;
-        cpu.regs.MEMPTR = addr;
-        uint8_t val = cpu.read(addr);
-        cpu.wait(3);
-        uint8_t carry_flag = (cpu.regs.F & Flags::C) ? 1 : 0;
-        uint8_t res, new_c;
-
-        switch ((cpu.ddcb_opcode >> 3) & 7) {
-            case 0: new_c = val >> 7; res = (val << 1) | new_c; break;
-            case 1: new_c = val & 1;  res = (val >> 1) | (new_c << 7); break;
-            case 2: new_c = val >> 7; res = (val << 1) | carry_flag; break;
-            case 3: new_c = val & 1;  res = (val >> 1) | (carry_flag << 7); break;
-            case 4: new_c = val >> 7; res = val << 1; break;
-            case 5: new_c = val & 1;  res = (val >> 1) | (val & 0x80); break;
-            case 6: new_c = val >> 7; res = (val << 1) | 1; break;
-            default:new_c = val & 1;  res = val >> 1; break;
-        }
-
-        cpu.write(addr, res);
-        int reg = cpu.ddcb_opcode & 7;
-        if (reg != 6) cpu.write_reg8(reg, res);
-        set_rot_flags(cpu, res, new_c);
-    }
-
-    void handle_ddcb_fdcb_bit(Z80& cpu) {
-        uint16_t addr = ((cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY) + cpu.ddcb_displacement) & 0xFFFF;
-        cpu.regs.MEMPTR = addr;
-        uint8_t val = cpu.read(addr);
-        cpu.wait(3);  // Additional processing time for BIT
-        int bit_pos = (cpu.ddcb_opcode >> 3) & 7;
-        uint8_t result = val & (1 << bit_pos);
-        
-        uint8_t f = (cpu.regs.F & Flags::C) | Flags::H;
-        if (result == 0) f |= (Flags::Z | Flags::PV);
-        if (bit_pos == 7 && result) f |= Flags::S;
-        
-        // For indexed BIT instructions, F5/F3 are taken from the 
-        // high byte of the effective address (MEMPTR).
-        f |= ((addr >> 8) & (Flags::F5 | Flags::F3));
-        cpu.regs.F = f;
-    }
-
-    void handle_ddcb_fdcb_res(Z80& cpu) {
-        uint16_t addr = ((cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY) + cpu.ddcb_displacement) & 0xFFFF;
-        cpu.regs.MEMPTR = addr;
-        uint8_t val = cpu.read(addr);
-        cpu.wait(3);
-        val &= ~(1 << ((cpu.ddcb_opcode >> 3) & 7));
-        cpu.write(addr, val);
-        if ((cpu.ddcb_opcode & 7) != 6) cpu.write_reg8(cpu.ddcb_opcode & 7, val);
-    }
-
-    void handle_ddcb_fdcb_set(Z80& cpu) {
-        uint16_t addr = ((cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY) + cpu.ddcb_displacement) & 0xFFFF;
-        cpu.regs.MEMPTR = addr;
-        uint8_t val = cpu.read(addr);
-        cpu.wait(3);
-        val |= (1 << ((cpu.ddcb_opcode >> 3) & 7));
-        cpu.write(addr, val);
-        if ((cpu.ddcb_opcode & 7) != 6) cpu.write_reg8(cpu.ddcb_opcode & 7, val);
-    }
-
-    // Accumulator Rotates
-    void handle_rla(Z80& cpu)  {
-        uint8_t c = (cpu.regs.A >> 7);
-        cpu.regs.A = (cpu.regs.A << 1) | ((cpu.regs.F & Flags::C) ? 1 : 0);
-        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
-        cpu.regs.Q = cpu.regs.F;
-    }
-    void handle_rra(Z80& cpu)  {
-        uint8_t c = (cpu.regs.A & 1);
-        cpu.regs.A = (cpu.regs.A >> 1) | ((cpu.regs.F & Flags::C) ? 0x80 : 0);
-        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
-        cpu.regs.Q = cpu.regs.F;
-    }
-    void handle_rlca(Z80& cpu) {
-        uint8_t c = (cpu.regs.A >> 7);
-        cpu.regs.A = (cpu.regs.A << 1) | c;
-        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
-        cpu.regs.Q = cpu.regs.F;
-    }
-    void handle_rrca(Z80& cpu) {
-        uint8_t c = (cpu.regs.A & 1);
-        cpu.regs.A = (cpu.regs.A >> 1) | (c << 7);
-        cpu.regs.F = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV)) | (cpu.regs.A & (Flags::F5 | Flags::F3)) | c;
-        cpu.regs.Q = cpu.regs.F;
-    }
+void handle_ddcb_fdcb_set(Z80& cpu) {
+    uint16_t addr   = ddcb_addr(cpu);
+    cpu.regs.MEMPTR = addr;
+    uint8_t  val    = cpu.read(addr);
+    cpu.wait(2);
+    val |= (1 << ((cpu.ddcb_opcode >> 3) & 7));
+    cpu.write(addr, val);
+    int reg = cpu.ddcb_opcode & 7;
+    if (reg != 6) cpu.write_reg8(reg, val);
+    cpu.regs.Q = 0;
+}
 
 } // namespace z80

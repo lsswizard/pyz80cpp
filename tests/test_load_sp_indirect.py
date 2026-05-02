@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """LD (nn),SP and LD SP,(nn) tests."""
-import pytest
 from conftest import write_program
 
 class TestLoadSPIndirect:

@@ -9,7 +9,6 @@ Test files need to be downloaded separately. Place them in a tests/ directory.
 import os
 import sys
 import struct
-from pathlib import Path
 
 import pytest
 
@@ -268,7 +267,7 @@ class TestZ80Exerciser:
         # Run partial test to verify core functionality
         cycles, hash_val, lines, columns = harness.run_cpm(max_cycles=100_000_000)
 
-        print(f"\nZEXDOC CP/M (partial):")
+        print("\nZEXDOC CP/M (partial):")
         print(f"  Cycles executed: {cycles}")
         print(f"  Final Hash: {hash_val:08X}")
         print(f"  PC: {harness.cpu.registers.PC:04X}")
@@ -288,7 +287,7 @@ class TestZ80Exerciser:
         # Run partial test to verify core functionality
         cycles, hash_val, lines, columns = harness.run_cpm(max_cycles=100_000_000)
 
-        print(f"\nZEXALL CP/M (partial):")
+        print("\nZEXALL CP/M (partial):")
         print(f"  Cycles executed: {cycles}")
         print(f"  Final Hash: {hash_val:08X}")
         print(f"  PC: {harness.cpu.registers.PC:04X}")

@@ -2,9 +2,8 @@
 """Comprehensive 8-bit increment and decrement tests."""
 import pytest
 from conftest import (
-    write_program, cpu, step_n,
-    FLAG_S, FLAG_Z, FLAG_F5, FLAG_H, FLAG_F3, FLAG_PV, FLAG_N, FLAG_C,
-    assert_flags, flag_set, flag_clear
+    write_program, FLAG_S, FLAG_Z, FLAG_F5, FLAG_H, FLAG_F3, FLAG_PV, FLAG_N, FLAG_C,
+    flag_set, flag_clear
 )
 
 

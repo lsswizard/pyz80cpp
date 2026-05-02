@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive jump, call, and return instruction tests."""
 import pytest
-from conftest import write_program, flag_set, flag_clear, step_n, FLAG_Z, FLAG_C, FLAG_PV, FLAG_S
+from conftest import write_program, FLAG_Z, FLAG_C, FLAG_PV, FLAG_S
 
 
 class TestJp:

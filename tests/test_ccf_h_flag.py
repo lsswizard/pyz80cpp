@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """CCF H flag tests."""
 
-import pytest
 from conftest import write_program, flag_set, flag_clear, FLAG_C, FLAG_H, FLAG_N
 
 

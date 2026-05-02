@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Accumulator and flag manipulation instructions."""
-import pytest
-from conftest import write_program, step_n, flag_set, flag_clear, FLAG_H, FLAG_N, FLAG_C, FLAG_Z, FLAG_PV, FLAG_S
+from conftest import write_program, step_n, flag_set, flag_clear, FLAG_H, FLAG_N, FLAG_C, FLAG_Z, FLAG_PV
 
 class TestAccFlagOps:
     def test_cpl(self, cpu):

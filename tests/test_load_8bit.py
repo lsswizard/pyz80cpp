@@ -2,8 +2,7 @@
 """Comprehensive 8-bit load instruction tests."""
 import pytest
 from conftest import (
-    write_program, cpu, INSTRUCTIONS,
-    FLAG_S, FLAG_Z, FLAG_F5, FLAG_H, FLAG_F3, FLAG_PV, FLAG_N, FLAG_C
+    write_program
 )
 
 

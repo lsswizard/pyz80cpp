@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive CB-prefixed BIT, SET, RES instruction tests."""
 import pytest
-from conftest import write_program, run_cb_instruction, flag_set, flag_clear, FLAG_Z, FLAG_H, FLAG_C, FLAG_PV, FLAG_N, FLAG_S
+from conftest import run_cb_instruction, flag_set, flag_clear, FLAG_Z, FLAG_H, FLAG_C, FLAG_PV, FLAG_N, FLAG_S
 
 
 class TestBIT:

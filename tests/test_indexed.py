@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """Indexed (IX/IY) instruction tests."""
 
-import pytest
 from conftest import (
     write_program,
-    flag_set,
-    flag_clear,
-    FLAG_Z,
-    FLAG_C,
-    FLAG_S,
-    FLAG_H,
-    FLAG_PV,
-    FLAG_N,
 )
 
 

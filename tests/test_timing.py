@@ -2,7 +2,6 @@
 """Instruction timing tests."""
 
 import pytest
-from conftest import write_program
 
 
 class TestTiming:

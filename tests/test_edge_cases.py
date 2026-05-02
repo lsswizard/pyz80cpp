@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
 """Edge case tests."""
 
-import pytest
 from conftest import (
     write_program,
     step_n,
-    flag_set,
-    flag_clear,
-    FLAG_Z,
-    FLAG_C,
-    FLAG_PV,
-    FLAG_S,
-    FLAG_H,
-    FLAG_F5,
-    FLAG_F3,
 )
 
 

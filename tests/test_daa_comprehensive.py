@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """Comprehensive DAA tests."""
 
-import pytest
 from conftest import (
     write_program,
     step_n,
     flag_set,
-    flag_clear,
     FLAG_C,
     FLAG_Z,
-    FLAG_H,
-    FLAG_N,
 )
 
 

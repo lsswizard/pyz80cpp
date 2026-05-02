@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Undocumented flag tests (F3, F5)."""
 
-import pytest
-from conftest import write_program, flag_set, flag_clear, FLAG_F5, FLAG_F3
+from conftest import write_program, flag_set, FLAG_F5, FLAG_F3
 
 
 class TestUndocumentedFlags:

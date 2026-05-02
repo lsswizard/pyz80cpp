@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """ED instruction tests."""
 
-import pytest
 from conftest import (
     write_program,
     flag_set,
@@ -9,9 +8,6 @@ from conftest import (
     FLAG_Z,
     FLAG_C,
     FLAG_PV,
-    FLAG_N,
-    FLAG_S,
-    FLAG_H,
 )
 
 

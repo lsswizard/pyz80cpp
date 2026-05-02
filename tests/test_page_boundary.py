@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Memory operations that cross 64KB boundaries."""
-import pytest
 from conftest import write_program
 
 class TestPageBoundary:

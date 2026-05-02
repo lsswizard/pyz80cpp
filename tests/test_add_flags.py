@@ -2,8 +2,7 @@
 """Comprehensive ADD/ADC/SUB/SBC instruction tests."""
 import pytest
 from conftest import (
-    write_program, cpu, step_n,
-    FLAG_S, FLAG_Z, FLAG_F5, FLAG_H, FLAG_F3, FLAG_PV, FLAG_N, FLAG_C,
+    write_program, FLAG_S, FLAG_Z, FLAG_F5, FLAG_H, FLAG_F3, FLAG_PV, FLAG_N, FLAG_C,
     assert_flags, _add_flags, _sub_flags, flag_set, flag_clear
 )
 

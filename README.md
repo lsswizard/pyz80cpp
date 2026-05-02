@@ -4,11 +4,11 @@ A high-performance Z80 CPU emulator implemented in C++ as a reusable library. Th
 
 ## Features
 
-- **Cycle-accurate execution** — every instruction matches Zilog T-state specifications using internal M-cycle wait states.
+- **Cycle-accurate execution** — every instruction matches Zilog T-state specifications with simplified timing model.
 - **Machine-agnostic design** — zero machine-specific code in the C++ core; all interactions go through a `Bus` interface.
 - **Modular handler architecture** — instruction handlers organized by category (ALU, block, I/O, jump, load).
 - **Comprehensive Instruction Support** — includes all documented and many undocumented instructions (e.g., `SLL`, `IXH/IXL` register access, undocumented `IM` modes).
-- **Optional Python bindings** — `nanobind` bindings available for high-performance Python integration.
+- **Optional Python bindings** — pybind11 bindings available for high-performance Python integration.
 - **Modern C++ build system** — uses CMake 3.16+ and C++17.
 - **High test coverage** — over 1390 tests, including ZEXDOC/ZEXALL exercisers.
 
@@ -42,7 +42,7 @@ cpu.step();      // HALT — returns 4 T-states
 
 ## Python Integration
 
-If compiled with `-DENABLE_NANOBIND=ON`:
+If compiled with `-DENABLE_PYBIND11=ON`:
 
 ```python
 from z80_core import Z80, SimpleBus
@@ -51,7 +51,7 @@ bus = SimpleBus()
 cpu = Z80(bus)
 
 # Load machine code
-bus.write(0x100, 0x00) # NOP
+bus.write(0x100, 0x00)  # NOP
 
 cpu.registers.PC = 0x100
 t_states = cpu.step()
@@ -62,7 +62,7 @@ print(f"Executed in {t_states} cycles")
 
 ```bash
 mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_NANOBIND=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_PYBIND11=ON
 make -j$(nproc)
 ```
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Block I/O instruction tests."""
 
-import pytest
 from conftest import write_program, step_n
 
 

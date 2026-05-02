@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CALL and RET instruction tests."""
 import pytest
-from conftest import write_program, flag_set, flag_clear, FLAG_Z, FLAG_C, FLAG_PV, FLAG_S
+from conftest import write_program, FLAG_Z, FLAG_C, FLAG_PV, FLAG_S
 
 class TestCallRet:
     def test_call_nn(self, cpu):

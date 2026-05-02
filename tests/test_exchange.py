@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Register exchange instruction tests."""
-import pytest
 from conftest import write_program
 
 class TestExchange:

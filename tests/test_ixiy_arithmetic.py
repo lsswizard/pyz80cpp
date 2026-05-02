@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """IX/IY arithmetic with IXH/IXL tests."""
-import pytest
-from conftest import write_program, flag_set, flag_clear, FLAG_Z, FLAG_C, FLAG_S
+from conftest import write_program, flag_set, FLAG_Z
 
 class TestIXIYArithmetic:
     def test_add_a_ixh(self, cpu):

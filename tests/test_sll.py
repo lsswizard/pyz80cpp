@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """SLL (undocumented) instruction tests."""
-import pytest
-from conftest import write_program, run_cb_instruction, flag_set, flag_clear, FLAG_C, FLAG_Z
+from conftest import run_cb_instruction, flag_set, flag_clear, FLAG_C
 
 class TestSLL:
     def test_sll_a(self, cpu):

@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.0] — 2026-05-02
+
+### Changed
+- **Python bindings**: Switched from nanobind to pybind11 for better compatibility and industry standard support.
+- **Timing model**: Removed `timing.h`, simplified to flat wait states (`get_memory_wait_states`, `get_io_wait_states`) with optional `contend()` hook for Spectrum-style contention.
+- **Bus interface**: Made `Bus` pure virtual (was partially virtual with embedded buffers). `SimpleBus` now handles 64KB memory + 256-byte I/O space (fixed from 64KB).
+- **Opcode table**: Compacted initialization using loops and `BOTH()` macro for DD/FD mirror tables. Corrected T-state counts based on Z80 CPU manual.
+
+### Fixed
+- **Critical**: CP instruction F3/F5 flags now come from operand (not result) — hardware-accurate.
+- **Critical**: I/O port addressing now masks to 8-bit (`port & 0xFF`) — was incorrectly using 64KB.
+- **Critical**: R register now increments during NMI/INT acknowledge cycles and HALT NOPs — matches Z80 spec.
+- **Critical**: Added missing `handle_dd_fd_adc_ixd()` and `handle_dd_fd_sbc_ixd()` handlers (declared but not defined).
+- **MEMPTR**: Corrected for LD (nn),A / LD A,(nn) / EX (SP),HL and block I/O operations.
+- **Q register**: All handlers now correctly set `cpu.regs.Q` for CCF/SCF F3/F5 behavior.
+- **CMakeLists.txt**: Removed deleted `timing.h` reference that broke builds.
+
+### Added
+- Inline `adc8_flags()` and `sbc8_flags()` helpers in `alu.cpp` — replaces removed `calc_adc_flags()` / `calc_sbc_flags()` from `flags.h`.
+- `LAST_Q` field in Registers for tracking previous Q state.
+- `BOTH(op,fn,cy,ln,af)` macro for DD/FD table mirroring.
+
+### Removed
+- `include/z80/timing.h` — clock constants moved to machine code if needed.
+- `calc_adc_flags()` and `calc_sbc_flags()` from `flags.h` — replaced by inline helpers.
+- `benchmark.py` — outdated performance testing script.
+- Complex per-M-cycle tracking (`current_m_cycle`, `cycle_in_m`) — simplified to flat wait states.
+
+---
+
 ## [2.5.1] — 2026-05-01
 
 ### Fixed

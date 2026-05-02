@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Integration tests."""
 
-import pytest
 from conftest import write_program, step_n
 
 

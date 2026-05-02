@@ -52,29 +52,9 @@ inline uint8_t calc_add_flags(uint8_t a, uint8_t b) {
     return FlagTables::ADD_FLAGS[(uint16_t(a) << 8) | b];
 }
 
-// 8-bit ADC: flags for a + b + carry
-inline uint8_t calc_adc_flags(uint8_t a, uint8_t b, uint8_t carry, uint16_t res) {
-    uint8_t r = res & 0xFF;
-    uint8_t h = ((a & 0x0F) + (b & 0x0F) + carry) > 0x0F ? Flags::H : 0;
-    uint8_t pv = (~(a ^ b) & (a ^ r) & 0x80) ? Flags::PV : 0;
-    return (r & (Flags::S | Flags::F5 | Flags::F3)) |
-           (r == 0 ? Flags::Z : 0) | h | pv |
-           (res > 0xFF ? Flags::C : 0);
-}
-
 // 8-bit SUB: flags for a - b
 inline uint8_t calc_sub_flags(uint8_t a, uint8_t b) {
     return FlagTables::SUB_FLAGS[(uint16_t(a) << 8) | b];
-}
-
-// 8-bit SBC: flags for a - b - carry
-inline uint8_t calc_sbc_flags(uint8_t a, uint8_t b, uint8_t carry, uint16_t res) {
-    uint8_t r = res & 0xFF;
-    uint8_t h = ((a & 0x0F) < ((b & 0x0F) + carry)) ? Flags::H : 0;
-    uint8_t pv = ((a ^ b) & (a ^ r) & 0x80) ? Flags::PV : 0;
-    return Flags::N | (r & (Flags::S | Flags::F5 | Flags::F3)) |
-           (r == 0 ? Flags::Z : 0) | h | pv |
-           (res > 0xFF ? Flags::C : 0);
 }
 
 // INC r — caller preserves carry by masking: F = (F & C) | calc_inc_flags(val)

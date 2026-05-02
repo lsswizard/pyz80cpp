@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """NOP instruction tests."""
-import pytest
 from conftest import write_program
 
 class TestNop:

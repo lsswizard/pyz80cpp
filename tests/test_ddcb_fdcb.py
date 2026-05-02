@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """DDCB/FDCB indexed bit operation tests."""
 
-import pytest
 from conftest import (
     write_program,
     flag_set,
     flag_clear,
     FLAG_Z,
     FLAG_C,
-    FLAG_S,
-    FLAG_PV,
 )
 
 

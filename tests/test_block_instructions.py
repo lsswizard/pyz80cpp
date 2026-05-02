@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive block transfer and compare instruction tests."""
-import pytest
 from conftest import (
-    write_program, cpu, step_n,
+    write_program, step_n,
     flag_set, flag_clear,
     FLAG_Z, FLAG_PV, FLAG_C, FLAG_S, FLAG_H, FLAG_N
 )

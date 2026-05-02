@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """DJNZ instruction tests."""
-import pytest
 from conftest import write_program
 
 class TestDJNZ:

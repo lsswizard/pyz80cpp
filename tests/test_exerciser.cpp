@@ -14,9 +14,9 @@
 #include <z80/z80.h>
 
 // FNV-1 hash (matching ZEXDOC/ZEXALL)
-static const uint32_t FNV1_32_INIT = 0x811C9DC5;
+static const uint32_t fnv1_32_INIT = 0x811C9DC5;
 
-static uint32_t fnv1_32(const uint8_t* data, size_t len, uint32_t h = FNV1_32_INIT) {
+static uint32_t fnv1_32(const uint8_t* data, size_t len, uint32_t h = fnv1_32_INIT) {
     for (size_t i = 0; i < len; i++) {
         h ^= data[i];
         h = (h * 0x01000193) & 0xFFFFFFFF;
@@ -90,21 +90,25 @@ public:
 
     Result run(uint64_t max_cycles) {
         Result result = {};
-        uint32_t hash = FNV1_32_INIT;
+        uint32_t hash = fnv1_32_INIT;
         uint32_t lines = 0;
         uint32_t columns = 0;
         uint32_t cursor_x = 0;
         bool completed = false;
-
+        
         while (!completed && cpu.get_cycles() < max_cycles) {
-            cpu.step();
-
-            // Check BDOS hook after instruction
+            // Check if we're about to execute the BDOS hook (HOOK_ADDR)
+            // If so, handle BDOS call BEFORE executing the RET instruction
             if (cpu.regs.PC == HOOK_ADDR) {
+                // The stack has the return address from CALL 5
+                // Pop it (don't use cpu.step() to execute RET)
+                uint16_t ret_addr = bus.memory[cpu.regs.SP] | (bus.memory[cpu.regs.SP + 1] << 8);
+                cpu.regs.SP += 2;
+                
+                // Handle BDOS function
                 uint8_t c = cpu.regs.C;
                 if (c == 2) {  // Print char (E = char)
                     uint8_t ch = cpu.regs.E;
-                    // Hash ALL characters (matching test-Z80.c)
                     hash = fnv1_32(&ch, 1, hash);
                     
                     if (ch == 0x0A) {  // LF
@@ -119,7 +123,6 @@ public:
                     for (int i = 0; i < 255; i++) {
                         uint8_t ch = bus.memory[de];
                         if (ch == 0x24) break;  // $ terminator
-                        // Hash ALL characters
                         hash = fnv1_32(&ch, 1, hash);
                         
                         if (ch == 0x0A) {
@@ -134,7 +137,13 @@ public:
                 } else if (c == 0) {  // Terminate
                     completed = true;
                 }
+                
+                // Set PC to return address (skip the RET instruction)
+                cpu.regs.PC = ret_addr;
+                continue;  // Don't execute the RET, we already handled it
             }
+            
+            cpu.step();
 
             if (cpu.is_halted()) {
                 completed = true;

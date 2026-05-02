@@ -48,6 +48,7 @@ struct Registers {
 
     // Q register — tracks whether last instruction modified F (for CCF/SCF F3/F5)
     uint8_t Q;
+    uint8_t LAST_Q;
 
     // ============================================================
     // 16-bit register accessors
@@ -112,7 +113,7 @@ struct Registers {
         EI_PENDING = EI_JUST_RESOLVED = false;
         UnresolvedPrefix = false;
         MEMPTR = 0;
-        Q = 0;
+        Q = LAST_Q = 0;
     }
 };
 

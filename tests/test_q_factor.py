@@ -2,7 +2,7 @@
 """Q factor tracking tests."""
 
 import pytest
-from conftest import write_program, flag_set, flag_clear
+from conftest import write_program
 
 FLAG_F3 = 0x08
 FLAG_F5 = 0x20

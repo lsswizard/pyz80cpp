@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Accumulator rotate instructions."""
-import pytest
 from conftest import write_program, flag_set, flag_clear, FLAG_C, FLAG_H, FLAG_N
 
 class TestRotateAcc:

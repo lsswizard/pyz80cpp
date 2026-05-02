@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """DD/FD prefix fallthrough tests."""
 
-import pytest
 from conftest import write_program
 
 
