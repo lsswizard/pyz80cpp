@@ -8,3 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Cache directories
+.cache/
+.pytest_cache/
+.ruff_cache/
+.opencode/
