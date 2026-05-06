@@ -48,6 +48,7 @@ void Z80::reset() {
     prefix_ix         = false;
     ddcb_displacement = 0;
     ddcb_opcode       = 0;
+    trap_address      = 0xFFFF;
 }
 
 // ============================================================
@@ -71,7 +72,11 @@ int Z80::step() {
     // --------------------------------------------------------
     if (nmi_pending) {
         nmi_pending = false;
-        halted      = false;
+        
+        if (halted) {
+            halted = false;
+            regs.PC = (regs.PC + 1) & 0xFFFF;
+        }
 
         // IFF1 is saved to IFF2 then cleared; IFF2 is unmodified by NMI per spec
         regs.IFF2 = regs.IFF1;
@@ -100,7 +105,11 @@ int Z80::step() {
             && !regs.UnresolvedPrefix) {
         interrupt_pending = false;
         regs.IFF1 = regs.IFF2 = false;
-        halted = false;
+
+        if (halted) {
+            halted = false;
+            regs.PC = (regs.PC + 1) & 0xFFFF;
+        }
 
         // INT-acknowledge M1 cycle: 6 T-states (4 base + 2 extra wait).
         // R IS incremented during the acknowledge cycle per Z80 spec.
@@ -261,11 +270,15 @@ void Z80::execute_instruction() {
 // ============================================================
 int Z80::run(int max_cycles) {
     int start = total_cycles;
-    while ((total_cycles - start) < max_cycles)
+    int target = start + max_cycles;
+
+    while (total_cycles < target) {
+        if (regs.PC == trap_address) break;
         step();
+    }
+
     return total_cycles - start;
 }
-
 int Z80::run_instructions(int count) {
     int start = instruction_count;
     for (int i = 0; i < count && !halted; ++i)

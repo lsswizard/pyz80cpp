@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.0] — 2026-05-06
+
+### Changed
+- **Architecture**: Restored 100% machine-independent design by removing `t_state` and `tstates_per_frame` from Z80 class — these are machine-specific (video frame) concepts that don't belong in a CPU core
+- **Bus interface**: Reverted `get_memory_wait_states()` and `get_io_wait_states()` to original signatures (removed `t_state` parameter) — timing calculations should be done by Bus implementation, not passed from CPU
+- **Z80 core**: Removed `get_contention()` function from Z80 class — contention is a bus/machine feature, not a CPU feature
+
+### Fixed
+- **Critical**: Eliminated circular dependency between CPU and Bus — CPU no longer passes its internal timing state to Bus
+- **BIT instruction** (io.cpp): Corrected F5/F3 flag handling — for (HL) operand, flags now come from MEMPTR (HL+1) instead of tested value, matching Fuse emulator behavior
+- **NMI/INT handling** (z80.cpp): Fixed HALT exit — when HALTed CPU receives interrupt, PC is now properly incremented (HALT is effectively a NOP-eating loop)
+
+### Removed
+- **Fast path pollution**: Removed from base `Bus` class: `fast_contention_table`, `fast_memory_ptr`, `bypass_contend`, `bypass_m1`, `bypass_io_wait`, `fast_io_read_ptr`, `fast_io_read_active` — these implementation details should be in derived classes if needed
+- **Unused files**: `include/z80/bus_optimized.h`, `include/z80/z80_cpu.h`, `src/bindings/machine_bus.h` — incomplete alternative designs not integrated into build
+
+### Technical Notes
+- Machine-specific timing (contention tables, wait states) should now be implemented in derived Bus classes
+- Example: `SpectrumBus` can maintain its own `total_cycles` counter and contention table, calculating wait states internally
+- Z80 core now pure CPU logic: instruction execution, cycle counting, interrupt handling — no machine-specific knowledge
+
+---
+
 ## [2.6.0] — 2026-05-02
 
 ### Changed

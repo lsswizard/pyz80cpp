@@ -44,7 +44,7 @@ public:
     }
 
     int get_memory_wait_states(uint16_t addr) override {
-        PYBIND11_OVERRIDE(int, Bus, get_memory_wait_states, addr);
+        PYBIND11_OVERRIDE_PURE(int, Bus, get_memory_wait_states, addr);
     }
 
     int get_io_wait_states(uint16_t port) override {
@@ -206,9 +206,16 @@ PYBIND11_MODULE(z80_core, m) {
         .def("set_state", &Z80::set_state,
              "Bulk-set registers from a dict, e.g. {'A': 0, 'PC': 0x100}")
 
+        // Cycle tracking
+        .def_property("cycles",
+            [](Z80& c) { return c.total_cycles; },
+            [](Z80& c, int v) { c.total_cycles = v; })
+        .def_readwrite("trap_address", &Z80::trap_address, "Early exit address for run()")
+        .def_readwrite("interrupt_data", &Z80::interrupt_data, "Data bus value during interrupt acknowledge")
+
         // Convenience CPU state shortcuts
-        .def_property("halted",
-            [](Z80& c) { return c.halted; },
+        .def_property("is_halted",
+            [](Z80& c) { return c.is_halted(); },
             [](Z80& c, bool v) { c.halted = v; })
         .def_property("IFF1",
             [](Z80& c) { return c.regs.IFF1; },

@@ -38,7 +38,7 @@ public:
 
     // Optional wait-state queries (machine-independent timing extension)
     virtual int get_memory_wait_states(uint16_t addr) { (void)addr; return 0; }
-    virtual int get_io_wait_states(uint16_t port)     { (void)port; return 0; }
+    virtual int get_io_wait_states(uint16_t port)      { (void)port; return 0; }
 
     // Optional debug hook
     virtual std::string debug_info() const { return {}; }

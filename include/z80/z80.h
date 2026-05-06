@@ -72,6 +72,9 @@ public:
 
     // --------------------------------------------------------
     // Bus accessors — called by instruction handlers
+    // These call virtual functions on bus_ptr.
+    // Machine-specific timing (contention, wait states) is handled
+    // by the Bus implementation, not the CPU core.
     // --------------------------------------------------------
 
     // M1 fetch: 4 T-states, increments R (7-bit counter, bit 7 preserved)
@@ -86,37 +89,45 @@ public:
 
     // Operand/displacement byte fetch: 3 T-states, does NOT increment R
     inline uint8_t fetch_byte() {
-        return read(regs.PC++);
+        uint8_t val = bus_ptr->read(regs.PC++);
+        add_cycles(3);
+        return val;
     }
 
     // Memory read: 3 T-states + machine wait states
     inline uint8_t read(uint16_t addr) {
-        add_cycles(3 + bus_ptr->get_memory_wait_states(addr));
+        int wait = bus_ptr->get_memory_wait_states(addr);
+        add_cycles(3 + wait);
         bus_ptr->contend(addr, 3);
         return bus_ptr->read(addr);
     }
 
     // Memory write: 3 T-states + machine wait states
     inline void write(uint16_t addr, uint8_t val) {
-        add_cycles(3 + bus_ptr->get_memory_wait_states(addr));
+        int wait = bus_ptr->get_memory_wait_states(addr);
+        add_cycles(3 + wait);
         bus_ptr->contend(addr, 3);
         bus_ptr->write(addr, val);
     }
 
     // I/O read: 4 T-states + machine wait states
     inline uint8_t in(uint16_t port) {
-        add_cycles(4 + bus_ptr->get_io_wait_states(port));
+        int wait = bus_ptr->get_io_wait_states(port);
+        add_cycles(4 + wait);
         return bus_ptr->in_(port);
     }
 
     // I/O write: 4 T-states + machine wait states
     inline void out(uint16_t port, uint8_t val) {
-        add_cycles(4 + bus_ptr->get_io_wait_states(port));
+        int wait = bus_ptr->get_io_wait_states(port);
+        add_cycles(4 + wait);
         bus_ptr->out_(port, val);
     }
 
     // Add idle cycles (internal delay states)
-    inline void wait(int cycles) { add_cycles(cycles); }
+    inline void wait(int cycles) { 
+        add_cycles(cycles); 
+    }
 
     // --------------------------------------------------------
     // Stack helpers
@@ -151,12 +162,13 @@ public:
     uint8_t   current_opcode = 0;
     bool      prefix_ix = false;   // true = DD prefix (IX), false = FD prefix (IY)
     Bus*      bus_ptr   = nullptr;
-    int       total_cycles     = 0;
+    int       total_cycles     = 0;     // Total T-states since reset (cumulative)
     int       instruction_count = 0;
     bool      halted           = false;
     bool      interrupt_pending = false;
     bool      nmi_pending       = false;
     uint8_t   interrupt_data    = 0xFF;
+    uint16_t  trap_address     = 0xFFFF; // If PC == trap_address, run() returns early
 
     // Pre-fetched values for DDCB/FDCB instructions (avoids double-read)
     int8_t  ddcb_displacement = 0;

@@ -267,22 +267,40 @@ ROT_OP(handle_srl_r,
     uint8_t res   = val >> 1;)
 
 // BIT b,r — tests bit; affects Z, H, S, PV, F3, F5
-// BUG FIX: PV = Z (mirrors zero flag) for *all* bit positions, not just 2/4/6
+// Based on Fuse implementation:
+// For register operands: F5/F3 come from the value tested
+// For (HL) operand: F5/F3 come from MEMPTR (HL+1), not from value
 void handle_cb_bit(Z80& cpu) {
     int     bit_pos = (cpu.current_opcode >> 3) & 7;
     int     reg     = cpu.current_opcode & 7;
-    if (reg == 6) cpu.wait(1);
-    uint8_t val     = cpu.read_reg8(reg);
-    uint8_t result  = val & (1 << bit_pos);
-
+    
+    uint8_t val;
+    if (reg == 6) {
+        // BIT b,(HL) - special case
+        cpu.wait(1);
+        val = cpu.read(cpu.regs.HL());
+    } else {
+        val = cpu.read_reg8(reg);
+    }
+    
+    uint8_t result = val & (1 << bit_pos);
+    
     uint8_t f = (cpu.regs.F & Flags::C) | Flags::H;
-    if (result == 0)         f |= (Flags::Z | Flags::PV);  // PV = Z always
-    if (result & Flags::S)   f |= Flags::S;                // S = bit 7 of tested value
-
-    // For non-(HL) operands, F5/F3 come from the register value itself
-    // For (HL) they come from MEMPTR high byte (handled differently — see DDCB)
-    f |= val & (Flags::F5 | Flags::F3);
-
+    if (result == 0) f |= (Flags::Z | Flags::PV);  // PV = Z always
+    if (result & Flags::S) f |= Flags::S;
+    
+    // For (HL), F5/F3 come from MEMPTR (HL+1), not from value
+    // Update MEMPTR = HL + 1 for indexed operations
+    uint16_t memptr = (cpu.regs.HL() + 1) & 0xFFFF;
+    
+    if (reg == 6) {
+        // (HL) operand - use MEMPTR high byte for F5/F3
+        f |= (memptr >> 8) & (Flags::F5 | Flags::F3);
+    } else {
+        // Register operands - use the value itself
+        f |= val & (Flags::F5 | Flags::F3);
+    }
+    
     cpu.regs.F = f;
     cpu.regs.Q = f;
 }
