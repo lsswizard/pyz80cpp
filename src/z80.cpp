@@ -39,6 +39,7 @@ void Z80::set_bus(Bus* new_bus) {
 void Z80::reset() {
     regs.reset();
     total_cycles      = 0;
+    t_state           = 0;
     instruction_count = 0;
     halted            = false;
     interrupt_pending = false;
@@ -211,7 +212,7 @@ void Z80::execute_instruction() {
 
         if (opcode == 0xCB) {
             ddcb_displacement = (int8_t)fetch_byte();
-            ddcb_opcode       = fetch_byte();
+            ddcb_opcode       = fetch_opcode();  // DDCB opcode is an M1 cycle (4 T, R++)
             current_opcode    = ddcb_opcode;
             const Instruction& ins = OpcodeTable::get_ddcb(ddcb_opcode);
             if (ins.exec) ins.exec(*this);
@@ -234,7 +235,7 @@ void Z80::execute_instruction() {
 
         if (opcode == 0xCB) {
             ddcb_displacement = (int8_t)fetch_byte();
-            ddcb_opcode       = fetch_byte();
+            ddcb_opcode       = fetch_opcode();  // FDCB opcode is an M1 cycle (4 T, R++)
             current_opcode    = ddcb_opcode;
             const Instruction& ins = OpcodeTable::get_fdcb(ddcb_opcode);
             if (ins.exec) ins.exec(*this);
@@ -269,15 +270,18 @@ void Z80::execute_instruction() {
 // run() / run_instructions()
 // ============================================================
 int Z80::run(int max_cycles) {
-    int start = total_cycles;
-    int target = start + max_cycles;
+    // Run until total_cycles reaches target.
+    // The caller passes the frame-relative cycle limit as max_cycles.
+    // Note: t_state is NOT reset here — Python must reset it at frame boundaries.
+    int start_total = total_cycles;
+    int target = start_total + max_cycles;
 
     while (total_cycles < target) {
         if (regs.PC == trap_address) break;
         step();
     }
 
-    return total_cycles - start;
+    return total_cycles - start_total;
 }
 int Z80::run_instructions(int count) {
     int start = instruction_count;

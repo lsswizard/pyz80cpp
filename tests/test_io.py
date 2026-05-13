@@ -18,28 +18,27 @@ class TestInAN:
         cpu.step()
         assert cpu.registers.A == 0xAB
 
-    def test_in_a_n_flags(self, cpu):
-        """IN A,(n) — sets flags based on value."""
+    def test_in_a_n_does_not_affect_flags(self, cpu):
+        """IN A,(n) — does NOT affect flags per Z80 CPU manual (flags unaffected)."""
         cpu.registers.A = 0x01
-        # Port address = 0x01 <<8 | 0x01 = 0x0101
+        cpu.registers.F = 0x00  # Start with all flags clear
         cpu.bus.out_(0x0101, 0x80)
         write_program(cpu, [0xDB, 0x01])
         cpu.step()
         assert cpu.registers.A == 0x80
-        assert flag_set(cpu, FLAG_S)  # 0x80 has bit 7 set
-        assert flag_clear(cpu, FLAG_Z)
-        assert flag_clear(cpu, FLAG_H)  # H cleared by IN
-        assert flag_clear(cpu, FLAG_N)
+        # Flags should remain 0 — IN A,(n) doesn't modify them
+        assert cpu.registers.F == 0
 
-    def test_in_a_n_zero(self, cpu):
-        """IN A,(n) — Z flag set when input is 0."""
+    def test_in_a_n_flags_preserved(self, cpu):
+        """IN A,(n) — flags preserved from before instruction."""
         cpu.registers.A = 0x50
-        # Port address = 0x50 <<8 | 0x50 = 0x5050
+        cpu.registers.F = 0xFF  # All flags set
         cpu.bus.out_(0x5050, 0x00)
         write_program(cpu, [0xDB, 0x50])
         cpu.step()
         assert cpu.registers.A == 0x00
-        assert flag_set(cpu, FLAG_Z)
+        # Flags should be preserved
+        assert cpu.registers.F == 0xFF
 
 
 class TestOutNA:
@@ -95,17 +94,20 @@ class TestInRC:
 
 class TestOutRC:
     """OUT (C),r - Output register to port (B<<8 | C)."""
-    @pytest.mark.parametrize("reg,opcode", [
-        ("B", 0x41), ("C", 0x49), ("D", 0x51), ("E", 0x59),
-        ("H", 0x61), ("L", 0x69), ("A", 0x79),
+    @pytest.mark.parametrize("reg,opcode,check_port", [
+        ("B", 0x41, 0x0250), ("C", 0x49, 0x02AB), ("D", 0x51, 0x0250),
+        ("E", 0x59, 0x0250), ("H", 0x61, 0x0250), ("L", 0x69, 0x0250),
+        ("A", 0x79, 0x0250),
     ])
-    def test_out_c_r(self, cpu, reg, opcode):
-        """OUT (C),r — output register to port (BC)."""
+    def test_out_c_r(self, cpu, reg, opcode, check_port):
+        """OUT (C),r — output register to port (BC).
+        Note: when reg='C', setting C=0xAB changes BC from 0x0250 to 0x02AB,
+        so the port address becomes 0x02AB, not 0x0250."""
         cpu.registers.BC = 0x0250
         setattr(cpu.registers, reg, 0xAB)
         write_program(cpu, [0xED, opcode])
         cpu.step()
-        assert cpu.bus.in_(0x0250) == 0xAB
+        assert cpu.bus.in_(check_port) == 0xAB
 
     def test_out_c_a(self, cpu):
         """OUT (C),A — output A to port (BC)."""

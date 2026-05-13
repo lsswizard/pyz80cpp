@@ -178,5 +178,5 @@ class TestInterrupts:
         write_program(cpu, [0x76])
         cpu.trigger_interrupt(0xFF)
         cpu.step()
-        assert not cpu.halted
+        assert not cpu.is_halted
         assert cpu.registers.PC == 0x0038

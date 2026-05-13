@@ -152,7 +152,7 @@ class Z80TestHarness:
                 # After handling BDOS, the RET at HOOK_ADDR will execute
                 # and PC will move to the next instruction - continue loop
 
-            if self.cpu.halted:
+            if self.cpu.is_halted:
                 completed = True
                 break
 
@@ -212,7 +212,7 @@ class Z80TestHarness:
             t = self.cpu.step()
             cycles += t
 
-            if self.cpu.halted:
+            if self.cpu.is_halted:
                 completed = True
                 break
             

@@ -205,22 +205,23 @@ class TestIndexed:
         assert cpu.registers.A == 0xCD
 
     def test_ld_ixh_ixl(self, cpu):
-        # LD IXH, L = 0xDD 0x65 (NOT 0x64 - that would be LD IXH, H)
-        cpu.registers.IX = 0x1234
+        # Under DD prefix: 0xDD 0x65 = LD IXH, IXL (NOT LD IXH, L)
+        # Register codes 4/5 always redirect to IXH/IXL under DD/FD prefix
+        cpu.registers.IX = 0x1234  # IXH=0x12, IXL=0x34
         cpu.registers.L = 0x56
         write_program(cpu, [0xDD, 0x65])
         cpu.step()
-        # IXH should become L (0x56), IXL stays (0x34)
-        assert cpu.registers.IX == 0x5634
+        # IXH ← IXL = 0x34, IXL unchanged = 0x34
+        assert cpu.registers.IX == 0x3434
 
     def test_ld_ixl_ixh(self, cpu):
-        # LD IXL, H = 0xDD 0x6C (NOT 0x6C - that's correct for LD IXL, H)
-        cpu.registers.IX = 0x1234
+        # Under DD prefix: 0xDD 0x6C = LD IXL, IXH (NOT LD IXL, H)
+        cpu.registers.IX = 0x1234  # IXH=0x12, IXL=0x34
         cpu.registers.H = 0x78
         write_program(cpu, [0xDD, 0x6C])
         cpu.step()
-        # IXL should become H (0x78), IXH stays (0x12)
-        assert cpu.registers.IX == 0x1278
+        # IXL ← IXH = 0x12, IXH unchanged = 0x12
+        assert cpu.registers.IX == 0x1212
 
     def test_add_a_ixh(self, cpu):
         cpu.registers.A = 0x10

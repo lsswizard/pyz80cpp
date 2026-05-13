@@ -31,29 +31,44 @@ public:
         PYBIND11_OVERRIDE(void, Bus, out_, port, val);
     }
 
-    void contend(uint16_t addr, int cycles) override {
-        PYBIND11_OVERRIDE(void, Bus, contend, addr, cycles);
-    }
-
-    void m1_cycle() override {
-        PYBIND11_OVERRIDE(void, Bus, m1_cycle);
-    }
-
     uint8_t interrupt_acknowledge() override {
         PYBIND11_OVERRIDE(uint8_t, Bus, interrupt_acknowledge);
     }
 
-    int get_memory_wait_states(uint16_t addr) override {
-        PYBIND11_OVERRIDE_PURE(int, Bus, get_memory_wait_states, addr);
-    }
-
-    int get_io_wait_states(uint16_t port) override {
-        PYBIND11_OVERRIDE(int, Bus, get_io_wait_states, port);
+    // FIX Issue 3: extra_cycles fallback for machines without timing tables
+    int extra_cycles(AccessKind kind, uint16_t addr, int t_state) override {
+        PYBIND11_OVERRIDE(int, Bus, extra_cycles, kind, addr, t_state);
     }
 };
 
+// ============================================================
+// AccessKind enum binding helper
+// ============================================================
+AccessKind access_kind_from_int(int val) {
+    switch (val) {
+        case 0: return AccessKind::OpcodeFetch;
+        case 1: return AccessKind::MemoryRead;
+        case 2: return AccessKind::MemoryWrite;
+        case 3: return AccessKind::IORead;
+        case 4: return AccessKind::IOWrite;
+        case 5: return AccessKind::InterruptAck;
+        default: return AccessKind::OpcodeFetch;
+    }
+}
+
 PYBIND11_MODULE(z80_core, m) {
     m.doc() = "Z80 CPU core — machine-independent, cycle-accurate emulator";
+
+    // ================================================================
+    // AccessKind enum
+    // ================================================================
+    py::enum_<AccessKind>(m, "AccessKind")
+        .value("OpcodeFetch", AccessKind::OpcodeFetch)
+        .value("MemoryRead", AccessKind::MemoryRead)
+        .value("MemoryWrite", AccessKind::MemoryWrite)
+        .value("IORead", AccessKind::IORead)
+        .value("IOWrite", AccessKind::IOWrite)
+        .value("InterruptAck", AccessKind::InterruptAck);
 
     // ================================================================
     // Bus
@@ -65,11 +80,122 @@ PYBIND11_MODULE(z80_core, m) {
         // I/O uses in_() / out_() — override these in Python subclasses
         .def("in_",   &Bus::in_,   "Read from I/O port")
         .def("out_",  &Bus::out_,  "Write to I/O port")
-        .def("contend",              &Bus::contend,              "Memory contention hook")
-        .def("m1_cycle",             &Bus::m1_cycle,             "M1 instruction-fetch hook")
         .def("interrupt_acknowledge",&Bus::interrupt_acknowledge,"Return interrupt vector byte")
-        .def("get_memory_wait_states",&Bus::get_memory_wait_states,"Additional memory wait states")
-        .def("get_io_wait_states",   &Bus::get_io_wait_states,  "Additional I/O wait states");
+
+        // FIX Issue 3: Timing tables with PROPER OWNERSHIP (copied to owned storage)
+        // FIX Issue 1: Access-type-specific timing tables
+        .def("set_timing_tables",
+            [](Bus& bus,
+               py::buffer fetch_tbl,
+               py::buffer mem_read_tbl,
+               py::buffer mem_write_tbl,
+               py::buffer io_read_tbl,
+               py::buffer io_write_tbl) {
+
+                // Helper to copy buffer to owned vector
+                auto copy_table = [](py::buffer& buf) -> std::vector<uint8_t> {
+                    py::buffer_info info = buf.request();
+                    if (info.ndim != 1 || info.shape[0] == 0) {
+                        return {};
+                    }
+                    auto* ptr = static_cast<uint8_t*>(info.ptr);
+                    return std::vector<uint8_t>(ptr, ptr + info.shape[0]);
+                };
+
+                bus.fetch_delay_table_vec = copy_table(fetch_tbl);
+                bus.mem_read_delay_table_vec = copy_table(mem_read_tbl);
+                bus.mem_write_delay_table_vec = copy_table(mem_write_tbl);
+                bus.io_read_delay_table_vec = copy_table(io_read_tbl);
+                bus.io_write_delay_table_vec = copy_table(io_write_tbl);
+
+                // Set pointers to owned data
+                if (!bus.fetch_delay_table_vec.empty()) {
+                    bus.fetch_delay_table = bus.fetch_delay_table_vec.data();
+                    bus.timing_table_size = bus.fetch_delay_table_vec.size();
+                }
+                if (!bus.mem_read_delay_table_vec.empty())
+                    bus.mem_read_delay_table = bus.mem_read_delay_table_vec.data();
+                if (!bus.mem_write_delay_table_vec.empty())
+                    bus.mem_write_delay_table = bus.mem_write_delay_table_vec.data();
+                if (!bus.io_read_delay_table_vec.empty())
+                    bus.io_read_delay_table = bus.io_read_delay_table_vec.data();
+                if (!bus.io_write_delay_table_vec.empty())
+                    bus.io_write_delay_table = bus.io_write_delay_table_vec.data();
+            },
+            "Set timing tables (copied into owned storage)")
+
+        .def("clear_timing_tables",
+            [](Bus& bus) {
+                bus.fetch_delay_table = nullptr;
+                bus.mem_read_delay_table = nullptr;
+                bus.mem_write_delay_table = nullptr;
+                bus.io_read_delay_table = nullptr;
+                bus.io_write_delay_table = nullptr;
+                bus.timing_table_size = 0;
+                // Vectors are automatically cleared
+            },
+            "Clear all timing tables")
+
+        // Fallback for machines without fast tables
+        .def("extra_cycles",
+            [](Bus& bus, int kind, uint16_t addr, int t_state) {
+                return bus.extra_cycles(access_kind_from_int(kind), addr, t_state);
+            },
+            "Get extra wait states for access type at t_state")
+
+        // Contention masks (machine-specific - set by Python)
+        .def_readwrite("fetch_contention_mask", &Bus::fetch_contention_mask,
+            "Bitmask of contended 4KB regions for opcode fetch")
+        .def_readwrite("mem_read_contention_mask", &Bus::mem_read_contention_mask,
+            "Bitmask of contended 4KB regions for memory read")
+        .def_readwrite("mem_write_contention_mask", &Bus::mem_write_contention_mask,
+            "Bitmask of contended 4KB regions for memory write")
+        .def_readwrite("io_read_contention_mask", &Bus::io_read_contention_mask,
+            "Bitmask of contended ports for I/O read (low 8 bits)")
+        .def_readwrite("io_write_contention_mask", &Bus::io_write_contention_mask,
+            "Bitmask of contended ports for I/O write (low 8 bits)")
+
+        // Read-only timing table pointers (for debugging)
+        .def_property_readonly("fetch_delay_table",
+            [](Bus& bus) -> py::object {
+                if (!bus.fetch_delay_table || bus.timing_table_size == 0)
+                    return py::none();
+                return py::bytes(reinterpret_cast<char*>(bus.fetch_delay_table),
+                                 bus.timing_table_size);
+            })
+        .def_property_readonly("timing_table_size",
+            [](Bus& bus) { return bus.timing_table_size; })
+
+        // FAST PATH: Set C++ memory pointer for direct access (avoids Python callbacks)
+        .def("set_fast_memory_ptr",
+            [](Bus& bus, py::buffer buf) {
+                py::buffer_info info = buf.request();
+                if (info.ndim != 1 || info.shape[0] < 65536) {
+                    throw std::runtime_error("Memory buffer must be at least 64KB");
+                }
+                bus.fast_memory_ptr = static_cast<uint8_t*>(info.ptr);
+            },
+            "Set C++ memory pointer for direct access (avoids Python callbacks)")
+        .def("set_fast_io_read_ptr",
+            [](Bus& bus, py::buffer buf) {
+                py::buffer_info info = buf.request();
+                if (info.ndim != 1 || info.shape[0] < 256) {
+                    throw std::runtime_error("I/O buffer must be at least 256 bytes");
+                }
+                bus.fast_io_read_ptr = static_cast<uint8_t*>(info.ptr);
+            },
+            "Set C++ I/O pointer for direct access (avoids Python callbacks)")
+        .def("set_fast_io_read_active",
+            [](Bus& bus, int port, bool active) {
+                if (port < 0 || port > 255) {
+                    throw std::runtime_error("Port must be 0-255");
+                }
+                bus.fast_io_read_active[port] = active;
+            },
+            "Enable/disable fast I/O for a specific port (low 8 bits)")
+        .def_readwrite("bypass_contend", &Bus::bypass_contend, "Bypass memory contention callbacks")
+        .def_readwrite("bypass_m1",      &Bus::bypass_m1,      "Bypass M1 fetch callbacks")
+        .def_readwrite("bypass_io_wait", &Bus::bypass_io_wait, "Bypass I/O wait state callbacks");
 
     // ================================================================
     // SimpleBus
@@ -179,7 +305,8 @@ PYBIND11_MODULE(z80_core, m) {
         .def("reset", &Z80::reset, "Reset CPU to power-on state")
 
         // Execution
-        .def("step",             &Z80::step,             "Execute one instruction; returns T-states consumed")
+        // FIX Issue 2: step() returns ACTUAL elapsed cycles (base + wait)
+        .def("step",             &Z80::step,             "Execute one instruction; returns T-states consumed INCLUDING wait states")
         .def("run",              &Z80::run,              "Run for at most max_cycles T-states")
         .def("run_instructions", &Z80::run_instructions, "Run exactly N instructions (stops on HALT)")
 
@@ -207,9 +334,13 @@ PYBIND11_MODULE(z80_core, m) {
              "Bulk-set registers from a dict, e.g. {'A': 0, 'PC': 0x100}")
 
         // Cycle tracking
+        // FIX Issue 2: NO tstates_per_frame - Python controls frame timing
         .def_property("cycles",
             [](Z80& c) { return c.total_cycles; },
             [](Z80& c, int v) { c.total_cycles = v; })
+        .def_property("t_state",
+            [](Z80& c) { return c.t_state; },
+            [](Z80& c, int v) { c.t_state = v; })
         .def_readwrite("trap_address", &Z80::trap_address, "Early exit address for run()")
         .def_readwrite("interrupt_data", &Z80::interrupt_data, "Data bus value during interrupt acknowledge")
 

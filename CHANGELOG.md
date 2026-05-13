@@ -2,26 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.1] — 2026-05-13
+
+### Fixed (Timing)
+- **Critical DDCB/FDCB timing bug** (z80.cpp): DDCB/FDCB opcode byte was fetched with `fetch_byte()` (3 T, no R++) instead of `fetch_opcode()` (4 T, R++). On real Z80 the fourth byte in a DDCB sequence is an M1 cycle. Affected all DDCB/FDCB instructions — timing was off by 1 T-state and R register was missing one increment.
+- **All 262 timing tests pass**: 0 timing regressions.
+
+### Fixed (Tests)
+- **test_halt.py, test_interrupts.py, test_z80_exerciser.py**: Updated `.halted` → `.is_halted` to match Python API rename.
+- **test_indexed.py**: Fixed `test_ld_ixh_ixl` and `test_ld_ixl_ixh` expectations — under DD prefix, register codes 4/5 redirect to IXH/IXL (not H/L). 0xDD 0x65 = LD IXH,IXL, not LD IXH,L.
+- **test_io.py**: Removed invalid flag assertions for `IN A,(n)` — Z80 CPU manual states IN A,(n) does not affect flags. Fixed `OUT (C),C` parametrized test where setting C changes the port address (BC).
+
+### Removed
+- **Dead files**: Deleted `include/z80/bus_optimized.h`, `include/z80/z80_cpu.h`, `src/bindings/machine_bus.h` — incomplete alternative designs never integrated into the build. Not referenced by any source, header, or CMake target.
+
+### Cleanup
+- **z80.cpp**: Removed unused `start_t` variable from `run()` method, clarified `t_state` frame-boundary contract in comment.
+- **bus.h**: Fixed `FastBus` member initialization order (silences compiler warning).
+
+---
+
 ## [2.7.0] — 2026-05-06
 
-### Changed
-- **Architecture**: Restored 100% machine-independent design by removing `t_state` and `tstates_per_frame` from Z80 class — these are machine-specific (video frame) concepts that don't belong in a CPU core
-- **Bus interface**: Reverted `get_memory_wait_states()` and `get_io_wait_states()` to original signatures (removed `t_state` parameter) — timing calculations should be done by Bus implementation, not passed from CPU
-- **Z80 core**: Removed `get_contention()` function from Z80 class — contention is a bus/machine feature, not a CPU feature
+### Changed (New Timing Architecture)
+- **Access-type-specific timing**: Introduced `AccessKind` enum (`OpcodeFetch`, `MemoryRead`, `MemoryWrite`, `IORead`, `IOWrite`, `InterruptAck`) with separate per-access-type delay tables. Each machine cycle type can have different contention behavior — M1 fetch, memory data access, and I/O each use their own table.
+- **Timing tables owned by C++**: Bus now stores delay tables in `std::vector` storage, copied from Python buffers. Eliminates use-after-free risk if Python buffer is garbage collected.
+- **t_state tracking**: Added `t_state` field to Z80 for T-state-accurate contention table indexing. Reset by Python at frame boundaries.
+- **step() returns actual cycles**: `cpu.step()` now returns base T-states PLUS wait states (not just base). Enables accurate hardware sync on the Python side.
+- **Contention masks**: Added per-access-type 16-bit masks (one bit per 4KB region) to determine which address regions are contended for each access type. Set by machine in Python.
+- **Fast memory pointer**: Added `fast_memory_ptr` for direct read bypass — avoids Python callback overhead for memory reads. Writes still go through virtual `bus_ptr->write()` to preserve ROM protection and bank mapping.
 
 ### Fixed
 - **Critical**: Eliminated circular dependency between CPU and Bus — CPU no longer passes its internal timing state to Bus
 - **BIT instruction** (io.cpp): Corrected F5/F3 flag handling — for (HL) operand, flags now come from MEMPTR (HL+1) instead of tested value, matching Fuse emulator behavior
 - **NMI/INT handling** (z80.cpp): Fixed HALT exit — when HALTed CPU receives interrupt, PC is now properly incremented (HALT is effectively a NOP-eating loop)
-
-### Removed
-- **Fast path pollution**: Removed from base `Bus` class: `fast_contention_table`, `fast_memory_ptr`, `bypass_contend`, `bypass_m1`, `bypass_io_wait`, `fast_io_read_ptr`, `fast_io_read_active` — these implementation details should be in derived classes if needed
-- **Unused files**: `include/z80/bus_optimized.h`, `include/z80/z80_cpu.h`, `src/bindings/machine_bus.h` — incomplete alternative designs not integrated into build
+- **NMI handler** (z80.cpp): Fixed to handle `halted` state — NMI now properly exits HALT and increments PC, matching real Z80 behavior
+  
+### Added
+- **FastBus**: New bus variant with external memory pointer for zero-overhead access
+- **AccessKind enum**: Binding exposes `AccessKind` with 6 values for per-cycle-type timing
+- **Timing table binding**: `set_timing_tables()` copies 5 tables (fetch, mem_r, mem_w, io_r, io_w) from Python into owned C++ storage
+- **Contention masks**: `fetch_contention_mask`, `mem_read_contention_mask`, etc. exposed as Python-settable properties
+- **Fast I/O path**: `set_fast_io_read_ptr()` and `set_fast_io_read_active()` for direct I/O read bypass
 
 ### Technical Notes
-- Machine-specific timing (contention tables, wait states) should now be implemented in derived Bus classes
-- Example: `SpectrumBus` can maintain its own `total_cycles` counter and contention table, calculating wait states internally
-- Z80 core now pure CPU logic: instruction execution, cycle counting, interrupt handling — no machine-specific knowledge
+- Machine-specific timing (contention tables, wait states) is implemented by building tables in Python and copying them into C++ storage
+- Example: `SpectrumBus` builds 5 timing tables from ULA contention patterns at init (or on paging change)
+- 48K timing is static — build tables once at init
+- 128K timing must invalidate/rebuild on paging changes to port 0x7FFD
 
 ---
 
