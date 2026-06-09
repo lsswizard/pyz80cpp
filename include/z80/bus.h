@@ -20,69 +20,6 @@ enum class AccessKind {
 };
 
 // ============================================================
-// FastBus - Uses external memory pointer for direct access
-// No Python callback overhead for memory operations
-// ============================================================
-class FastBus {
-public:
-    FastBus() : memory_ptr(nullptr), memory_size(0), memory_owner(false) {}
-
-    ~FastBus() {
-        if (memory_owner && memory_ptr) {
-            delete[] memory_ptr;
-        }
-    }
-
-    // Set external memory (Python passes pointer)
-    void set_memory(uint8_t* ptr, size_t size) {
-        if (memory_owner && memory_ptr) {
-            delete[] memory_ptr;
-        }
-        memory_ptr = ptr;
-        memory_size = size;
-        memory_owner = false;
-    }
-
-    // Allocate internal memory
-    void allocate_memory(size_t size = 65536) {
-        if (memory_owner && memory_ptr) {
-            delete[] memory_ptr;
-        }
-        memory_ptr = new uint8_t[size]();
-        memory_size = size;
-        memory_owner = true;
-    }
-
-    // Direct memory access - no callback overhead
-    uint8_t read(uint16_t addr) const {
-        return memory_ptr ? memory_ptr[addr] : 0xFF;
-    }
-
-    void write(uint16_t addr, uint8_t val) {
-        if (memory_ptr) {
-            memory_ptr[addr] = val;
-        }
-    }
-
-    // I/O - these need callbacks (less frequent)
-    virtual uint8_t in_(uint16_t port) { (void)port; return 0xFF; }
-    virtual void out_(uint16_t port, uint8_t val) { (void)port; (void)val; }
-
-    // Contention (optional)
-    virtual void contend(uint16_t addr, int cycles) { (void)addr; (void)cycles; }
-    virtual void m1_cycle() {}
-
-    // Memory pointer access
-    uint8_t* get_memory_ptr() { return memory_ptr; }
-    size_t get_memory_size() const { return memory_size; }
-
-protected:
-    uint8_t* memory_ptr;
-    size_t memory_size;
-    bool memory_owner;
-};
-
-// ============================================================
 // Bus Interface — machine-independent, timing tables owned by C++
 //
 // FIX Issue 3: Timing tables are COPIED into owned std::vector storage.
@@ -234,13 +171,6 @@ public:
     // FAST PATH: Direct memory access pointer (64KB)
     // ============================================================
     uint8_t* fast_memory_ptr = nullptr;
-
-    // ============================================================
-    // FAST PATH: Flags to bypass virtual calls
-    // ============================================================
-    bool bypass_contend = true;
-    bool bypass_m1 = true;
-    bool bypass_io_wait = false;
 
     // ============================================================
     // FAST PATH: Direct I/O read access (256 ports)

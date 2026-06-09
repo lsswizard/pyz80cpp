@@ -323,14 +323,16 @@ void OpcodeTable::init() {
     ed_table[0xA9] = {handle_cpd,  16, 2, true};
     ed_table[0xAA] = {handle_ind,  16, 2, true};
     ed_table[0xAB] = Instruction(handle_outd, 16, 2, true);
-    ed_table[0xB0] = Instruction(handle_ldir, 21, 2, true);
-    ed_table[0xB1] = Instruction(handle_cpir, 21, 2, true);
-    ed_table[0xB2] = Instruction(handle_inir, 21, 2, true);
-    ed_table[0xB3] = Instruction(handle_otir, 21, 2, true);
-    ed_table[0xB8] = Instruction(handle_lddr, 21, 2, true);
-    ed_table[0xB9] = Instruction(handle_cpdr, 21, 2, true);
-    ed_table[0xBA] = Instruction(handle_indr, 21, 2, true);
-    ed_table[0xBB] = Instruction(handle_otdr, 21, 2, true);
+    // Repeat base is 16 T-states for the non-repeating core;
+    // the repeating case adds 5T dynamically in the handler.
+    ed_table[0xB0] = Instruction(handle_ldir, 16, 2, true);
+    ed_table[0xB1] = Instruction(handle_cpir, 16, 2, true);
+    ed_table[0xB2] = Instruction(handle_inir, 16, 2, true);
+    ed_table[0xB3] = Instruction(handle_otir, 16, 2, true);
+    ed_table[0xB8] = Instruction(handle_lddr, 16, 2, true);
+    ed_table[0xB9] = Instruction(handle_cpdr, 16, 2, true);
+    ed_table[0xBA] = Instruction(handle_indr, 16, 2, true);
+    ed_table[0xBB] = Instruction(handle_otdr, 16, 2, true);
 
     // ================================================================
     // DD/FD prefix tables (IX/IY)

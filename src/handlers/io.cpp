@@ -42,6 +42,20 @@ static inline void set_block_io_flags(Z80& cpu, uint8_t val, uint8_t port_c, int
     cpu.regs.F = f;
 }
 
+// Same as set_block_io_flags but with 't' passed directly
+// (used by OUTI/OUTD where t = val + L instead of val + (C ± 1))
+static inline void set_block_io_flags_t(Z80& cpu, uint8_t val, uint16_t t) {
+    uint8_t  b   = cpu.regs.B;
+    uint8_t  f   = 0;
+    if (b & 0x80)  f |= Flags::S;
+    if (b == 0)    f |= Flags::Z;
+    f |= b & (Flags::F5 | Flags::F3);
+    if (val & 0x80)  f |= Flags::N;
+    if (t > 0xFF) f |= (Flags::C | Flags::H);
+    if (FlagTables::PARITY_TABLE[(t & 7) ^ b])  f |= Flags::PV;
+    cpu.regs.F = f;
+}
+
 // ============================================================
 // Standard I/O
 // ============================================================
@@ -155,20 +169,10 @@ void handle_outi(Z80& cpu) {
     cpu.out(cpu.regs.BC(), val);
     cpu.regs.set_HL(cpu.regs.HL() + 1);
     cpu.regs.MEMPTR = (cpu.regs.BC() + 1) & 0xFFFF;
-    // BUG FIX: use L (the *new* HL low byte after increment) as c_adj proxy.
-    // The formula is t = val + L (same as INI but with L, not (C+1)).
-    // Reconciled with block IO spec: t = val + L for OUT variants.
+    // t = val + L (new L after HL increment) for OUT variants
     uint16_t t = (uint16_t)val + cpu.regs.L;
-    uint8_t  b = cpu.regs.B;
-    uint8_t  f = 0;
-    if (b & 0x80)    f |= Flags::S;
-    if (b == 0)      f |= Flags::Z;
-    f |= b & (Flags::F5 | Flags::F3);
-    if (val & 0x80)  f |= Flags::N;
-    if (t > 0xFF)    f |= (Flags::C | Flags::H);
-    if (FlagTables::PARITY_TABLE[(t & 7) ^ b]) f |= Flags::PV;
-    cpu.regs.F = f;
-    cpu.regs.Q = f;
+    set_block_io_flags_t(cpu, val, t);
+    cpu.regs.Q = cpu.regs.F;
 }
 
 // OUTD — 16 T-states
@@ -179,18 +183,10 @@ void handle_outd(Z80& cpu) {
     cpu.out(cpu.regs.BC(), val);
     cpu.regs.set_HL(cpu.regs.HL() - 1);
     cpu.regs.MEMPTR = (cpu.regs.BC() - 1) & 0xFFFF;
-    // t = val + L (new L after decrement)
+    // t = val + L (new L after HL decrement)
     uint16_t t = (uint16_t)val + cpu.regs.L;
-    uint8_t  b = cpu.regs.B;
-    uint8_t  f = 0;
-    if (b & 0x80)    f |= Flags::S;
-    if (b == 0)      f |= Flags::Z;
-    f |= b & (Flags::F5 | Flags::F3);
-    if (val & 0x80)  f |= Flags::N;
-    if (t > 0xFF)    f |= (Flags::C | Flags::H);
-    if (FlagTables::PARITY_TABLE[(t & 7) ^ b]) f |= Flags::PV;
-    cpu.regs.F = f;
-    cpu.regs.Q = f;
+    set_block_io_flags_t(cpu, val, t);
+    cpu.regs.Q = cpu.regs.F;
 }
 
 void handle_otir(Z80& cpu) {
@@ -268,15 +264,15 @@ ROT_OP(handle_srl_r,
 
 // BIT b,r — tests bit; affects Z, H, S, PV, F3, F5
 // Based on Fuse implementation:
-// For register operands: F5/F3 come from the value tested
-// For (HL) operand: F5/F3 come from MEMPTR (HL+1), not from value
+// Register BIT b,r:       F5/F3 come from the value tested
+// BIT b,(HL):             F5/F3 also come from the value (same as register)
+// DDCB/FDCB BIT b,(IX+d): F5/F3 come from (IX+d) high byte (handled separately)
 void handle_cb_bit(Z80& cpu) {
     int     bit_pos = (cpu.current_opcode >> 3) & 7;
     int     reg     = cpu.current_opcode & 7;
     
     uint8_t val;
     if (reg == 6) {
-        // BIT b,(HL) - special case
         cpu.wait(1);
         val = cpu.read(cpu.regs.HL());
     } else {
@@ -289,17 +285,8 @@ void handle_cb_bit(Z80& cpu) {
     if (result == 0) f |= (Flags::Z | Flags::PV);  // PV = Z always
     if (result & Flags::S) f |= Flags::S;
     
-    // For (HL), F5/F3 come from MEMPTR (HL+1), not from value
-    // Update MEMPTR = HL + 1 for indexed operations
-    uint16_t memptr = (cpu.regs.HL() + 1) & 0xFFFF;
-    
-    if (reg == 6) {
-        // (HL) operand - use MEMPTR high byte for F5/F3
-        f |= (memptr >> 8) & (Flags::F5 | Flags::F3);
-    } else {
-        // Register operands - use the value itself
-        f |= val & (Flags::F5 | Flags::F3);
-    }
+    // F5/F3 come from the value for ALL CB BIT operations (register and (HL))
+    f |= val & (Flags::F5 | Flags::F3);
     
     cpu.regs.F = f;
     cpu.regs.Q = f;
@@ -328,8 +315,8 @@ void handle_cb_set(Z80& cpu) {
 // ============================================================
 
 static uint16_t ddcb_addr(Z80& cpu) {
-    uint16_t ix = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
-    return (ix + cpu.ddcb_displacement) & 0xFFFF;
+    uint16_t ix = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
+    return (ix + cpu.index_displacement) & 0xFFFF;
 }
 
 void handle_ddcb_fdcb_rot(Z80& cpu) {
@@ -338,7 +325,7 @@ void handle_ddcb_fdcb_rot(Z80& cpu) {
     uint8_t  val        = cpu.read(addr);
     cpu.wait(2);   // extra internal states (total mem-read cycle = 3+2 = 5, then write = 3)
 
-    int     op    = (cpu.ddcb_opcode >> 3) & 7;
+    int     op    = (cpu.index_opcode >> 3) & 7;
     uint8_t old_c = (cpu.regs.F & Flags::C) ? 1 : 0;
     uint8_t new_c, res;
 
@@ -355,7 +342,7 @@ void handle_ddcb_fdcb_rot(Z80& cpu) {
 
     cpu.write(addr, res);
     // Undocumented: result also stored in register (if not 6)
-    int reg = cpu.ddcb_opcode & 7;
+    int reg = cpu.index_opcode & 7;
     if (reg != 6) cpu.write_reg8(reg, res);
 
     set_rot_flags(cpu, res, new_c);
@@ -367,7 +354,7 @@ void handle_ddcb_fdcb_bit(Z80& cpu) {
     uint8_t  val    = cpu.read(addr);
     cpu.wait(2);
 
-    int     bit_pos = (cpu.ddcb_opcode >> 3) & 7;
+    int     bit_pos = (cpu.index_opcode >> 3) & 7;
     uint8_t result  = val & (1 << bit_pos);
 
     uint8_t f = (cpu.regs.F & Flags::C) | Flags::H;
@@ -386,9 +373,9 @@ void handle_ddcb_fdcb_res(Z80& cpu) {
     cpu.regs.MEMPTR = addr;
     uint8_t  val    = cpu.read(addr);
     cpu.wait(2);
-    val &= ~(1 << ((cpu.ddcb_opcode >> 3) & 7));
+    val &= ~(1 << ((cpu.index_opcode >> 3) & 7));
     cpu.write(addr, val);
-    int reg = cpu.ddcb_opcode & 7;
+    int reg = cpu.index_opcode & 7;
     if (reg != 6) cpu.write_reg8(reg, val);
     cpu.regs.Q = 0;
 }
@@ -398,9 +385,9 @@ void handle_ddcb_fdcb_set(Z80& cpu) {
     cpu.regs.MEMPTR = addr;
     uint8_t  val    = cpu.read(addr);
     cpu.wait(2);
-    val |= (1 << ((cpu.ddcb_opcode >> 3) & 7));
+    val |= (1 << ((cpu.index_opcode >> 3) & 7));
     cpu.write(addr, val);
-    int reg = cpu.ddcb_opcode & 7;
+    int reg = cpu.index_opcode & 7;
     if (reg != 6) cpu.write_reg8(reg, val);
     cpu.regs.Q = 0;
 }

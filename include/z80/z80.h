@@ -7,6 +7,12 @@
 
 namespace z80 {
 
+enum class IndexReg : uint8_t {
+    IX,  // DD prefix
+    IY   // FD prefix
+};
+
+
 class Z80;
 using OpHandler = void(*)(Z80&);
 
@@ -235,7 +241,7 @@ public:
     // --------------------------------------------------------
     Registers regs;
     uint8_t   current_opcode = 0;
-    bool      prefix_ix = false;   // true = DD prefix (IX), false = FD prefix (IY)
+    IndexReg  active_index = IndexReg::IX;
     Bus*      bus_ptr   = nullptr;
     int       total_cycles     = 0;     // Total T-states since reset (cumulative)
     int       t_state          = 0;     // Current T-state within frame (0 to tstates_per_frame-1)
@@ -247,8 +253,8 @@ public:
     uint16_t  trap_address     = 0xFFFF; // If PC == trap_address, run() returns early
 
     // Pre-fetched values for DDCB/FDCB instructions (avoids double-read)
-    int8_t  ddcb_displacement = 0;
-    uint8_t ddcb_opcode       = 0;
+    int8_t  index_displacement = 0;
+    uint8_t index_opcode       = 0;
 
 private:
     bool owns_bus = false;

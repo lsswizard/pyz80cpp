@@ -46,9 +46,9 @@ void Z80::reset() {
     nmi_pending       = false;
     interrupt_data    = 0xFF;
     current_opcode    = 0;
-    prefix_ix         = false;
-    ddcb_displacement = 0;
-    ddcb_opcode       = 0;
+    active_index        = IndexReg::IX;
+    index_displacement  = 0;
+    index_opcode        = 0;
     trap_address      = 0xFFFF;
 }
 
@@ -207,14 +207,17 @@ void Z80::execute_instruction() {
         if (ins.exec) ins.exec(*this);
 
     } else if (opcode == 0xDD) {
-        prefix_ix = true;
-        opcode = fetch_opcode();   // second M1: R also incremented
+        active_index = IndexReg::IX;
+        // Consume redundant DD/FD prefixes (e.g. DD DD xx ≡ DD xx)
+        do {
+            opcode = fetch_opcode();   // second M1: R also incremented
+        } while (opcode == 0xDD || opcode == 0xFD);
 
         if (opcode == 0xCB) {
-            ddcb_displacement = (int8_t)fetch_byte();
-            ddcb_opcode       = fetch_opcode();  // DDCB opcode is an M1 cycle (4 T, R++)
-            current_opcode    = ddcb_opcode;
-            const Instruction& ins = OpcodeTable::get_ddcb(ddcb_opcode);
+            index_displacement = (int8_t)fetch_byte();
+            index_opcode       = fetch_byte();
+            current_opcode    = index_opcode;
+            const Instruction& ins = OpcodeTable::get_ddcb(index_opcode);
             if (ins.exec) ins.exec(*this);
         } else {
             current_opcode = opcode;
@@ -227,17 +230,20 @@ void Z80::execute_instruction() {
                 if (mi.exec) mi.exec(*this);
             }
         }
-        prefix_ix = false;
+        active_index = IndexReg::IX;
 
     } else if (opcode == 0xFD) {
-        prefix_ix = false;
-        opcode = fetch_opcode();   // second M1: R also incremented
+        active_index = IndexReg::IY;
+        // Consume redundant DD/FD prefixes (e.g. FD FD xx ≡ FD xx)
+        do {
+            opcode = fetch_opcode();   // second M1: R also incremented
+        } while (opcode == 0xDD || opcode == 0xFD);
 
         if (opcode == 0xCB) {
-            ddcb_displacement = (int8_t)fetch_byte();
-            ddcb_opcode       = fetch_opcode();  // FDCB opcode is an M1 cycle (4 T, R++)
-            current_opcode    = ddcb_opcode;
-            const Instruction& ins = OpcodeTable::get_fdcb(ddcb_opcode);
+            index_displacement = (int8_t)fetch_byte();
+            index_opcode       = fetch_byte();
+            current_opcode    = index_opcode;
+            const Instruction& ins = OpcodeTable::get_fdcb(index_opcode);
             if (ins.exec) ins.exec(*this);
         } else {
             current_opcode = opcode;
@@ -249,7 +255,7 @@ void Z80::execute_instruction() {
                 if (mi.exec) mi.exec(*this);
             }
         }
-        prefix_ix = false;
+        active_index = IndexReg::IX;
 
     } else {
         const Instruction& ins = OpcodeTable::get_main(opcode);
@@ -270,9 +276,9 @@ void Z80::execute_instruction() {
 // run() / run_instructions()
 // ============================================================
 int Z80::run(int max_cycles) {
-    // Run until total_cycles reaches target.
-    // The caller passes the frame-relative cycle limit as max_cycles.
-    // Note: t_state is NOT reset here — Python must reset it at frame boundaries.
+    // FIX: Now runs until total_cycles reaches target, NOT until t_state.
+    // The caller passes the frame-relative t_state limit as max_cycles.
+    int start_t = t_state;
     int start_total = total_cycles;
     int target = start_total + max_cycles;
 
@@ -317,8 +323,8 @@ uint8_t Z80::read_reg8(int reg) {
         case 5: return regs.L;
         case 6: return read(regs.HL());
         case 7: return regs.A;
-        case 8: return prefix_ix ? regs.IXh() : regs.IYh();
-        case 9: return prefix_ix ? regs.IXl() : regs.IYl();
+        case 8: return active_index == IndexReg::IX ? regs.IXh() : regs.IYh();
+        case 9: return active_index == IndexReg::IX ? regs.IXl() : regs.IYl();
         default: return 0;
     }
 }
@@ -334,10 +340,10 @@ void Z80::write_reg8(int reg, uint8_t val) {
         case 6: write(regs.HL(), val); break;
         case 7: regs.A = val; break;
         case 8:
-            if (prefix_ix) regs.set_IXh(val); else regs.set_IYh(val);
+            if (active_index == IndexReg::IX) regs.set_IXh(val); else regs.set_IYh(val);
             break;
         case 9:
-            if (prefix_ix) regs.set_IXl(val); else regs.set_IYl(val);
+            if (active_index == IndexReg::IX) regs.set_IXl(val); else regs.set_IYl(val);
             break;
         default: break;
     }

@@ -193,9 +193,7 @@ PYBIND11_MODULE(z80_core, m) {
                 bus.fast_io_read_active[port] = active;
             },
             "Enable/disable fast I/O for a specific port (low 8 bits)")
-        .def_readwrite("bypass_contend", &Bus::bypass_contend, "Bypass memory contention callbacks")
-        .def_readwrite("bypass_m1",      &Bus::bypass_m1,      "Bypass M1 fetch callbacks")
-        .def_readwrite("bypass_io_wait", &Bus::bypass_io_wait, "Bypass I/O wait state callbacks");
+        ;
 
     // ================================================================
     // SimpleBus

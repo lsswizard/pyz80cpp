@@ -252,6 +252,7 @@ void handle_inc_rr(Z80& cpu) {
         case 2: cpu.regs.set_HL(cpu.regs.HL() + 1); break;
         case 3: cpu.regs.SP++; break;
     }
+    cpu.regs.Q = 0;
 }
 
 // DEC rr — 6 T-states
@@ -263,6 +264,7 @@ void handle_dec_rr(Z80& cpu) {
         case 2: cpu.regs.set_HL(cpu.regs.HL() - 1); break;
         case 3: cpu.regs.SP--; break;
     }
+    cpu.regs.Q = 0;
 }
 
 // ADD HL,rr — 11 T-states: 4(M1) + 7(internal)
@@ -562,7 +564,7 @@ void handle_rrd(Z80& cpu) {
 
 // LD r,(IX+d) / LD r,(IY+d)  — 19 T-states: 4+4+3+5+3
 void handle_dd_fd_ld_r_ixd(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
@@ -573,7 +575,7 @@ void handle_dd_fd_ld_r_ixd(Z80& cpu) {
 
 // LD (IX+d),r  — 19 T-states
 void handle_dd_fd_ld_ixd_r(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
@@ -584,7 +586,7 @@ void handle_dd_fd_ld_ixd_r(Z80& cpu) {
 
 // LD (IX+d),n  — 19 T-states
 void handle_dd_fd_ld_ixd_n(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     uint8_t  val    = cpu.read(cpu.regs.PC++);
     cpu.wait(2);
@@ -599,7 +601,7 @@ void handle_dd_fd_ld_ix_nn(Z80& cpu) {
     uint8_t  lo = cpu.read(cpu.regs.PC++);
     uint8_t  hi = cpu.read(cpu.regs.PC++);
     uint16_t v  = (uint16_t(hi) << 8) | lo;
-    if (cpu.prefix_ix) cpu.regs.IX = v; else cpu.regs.IY = v;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX = v; else cpu.regs.IY = v;
     cpu.regs.Q = 0;
 }
 
@@ -608,7 +610,7 @@ void handle_dd_fd_ld_nn_ix(Z80& cpu) {
     uint8_t  lo   = cpu.read(cpu.regs.PC++);
     uint8_t  hi   = cpu.read(cpu.regs.PC++);
     uint16_t addr = (uint16_t(hi) << 8) | lo;
-    uint16_t val  = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t val  = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     cpu.write(addr,     val & 0xFF);
     cpu.write(addr + 1, val >> 8);
     cpu.regs.MEMPTR = addr + 1;
@@ -622,21 +624,21 @@ void handle_dd_fd_ld_ix_nn_ind(Z80& cpu) {
     uint16_t addr = (uint16_t(hi) << 8) | lo;
     uint16_t val  = cpu.read(addr) | (uint16_t(cpu.read(addr + 1)) << 8);
     cpu.regs.MEMPTR = addr + 1;
-    if (cpu.prefix_ix) cpu.regs.IX = val; else cpu.regs.IY = val;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX = val; else cpu.regs.IY = val;
     cpu.regs.Q = 0;
 }
 
 // INC IX / INC IY  — 10 T-states: 4(DD M1) + 4(IX M1) + 2(internal)
 void handle_dd_fd_inc_ix(Z80& cpu) {
     cpu.wait(2);
-    if (cpu.prefix_ix) cpu.regs.IX++; else cpu.regs.IY++;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX++; else cpu.regs.IY++;
     cpu.regs.Q = 0;
 }
 
 // DEC IX / DEC IY
 void handle_dd_fd_dec_ix(Z80& cpu) {
     cpu.wait(2);
-    if (cpu.prefix_ix) cpu.regs.IX--; else cpu.regs.IY--;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX--; else cpu.regs.IY--;
     cpu.regs.Q = 0;
 }
 
@@ -664,7 +666,7 @@ void handle_dd_fd_dec_ixhl(Z80& cpu) {
 
 // ADD IX,rr / ADD IY,rr  — 15 T-states
 void handle_dd_fd_add_ix_rr(Z80& cpu) {
-    uint16_t ix  = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix  = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int      reg = (cpu.current_opcode >> 4) & 3;
     uint16_t val;
     switch (reg) {
@@ -676,7 +678,7 @@ void handle_dd_fd_add_ix_rr(Z80& cpu) {
     cpu.wait(7);
     uint32_t res = ix + val;
     uint8_t  h   = ((ix & 0x0FFF) + (val & 0x0FFF)) > 0x0FFF ? Flags::H : 0;
-    if (cpu.prefix_ix) cpu.regs.IX = res & 0xFFFF;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX = res & 0xFFFF;
     else               cpu.regs.IY = res & 0xFFFF;
     cpu.regs.F  = (cpu.regs.F & (Flags::S | Flags::Z | Flags::PV))
                 | ((res >> 8) & (Flags::F5 | Flags::F3))
@@ -689,13 +691,13 @@ void handle_dd_fd_add_ix_rr(Z80& cpu) {
 // LD SP,IX / LD SP,IY
 void handle_dd_fd_ld_sp_ix(Z80& cpu) {
     cpu.wait(2);
-    cpu.regs.SP = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    cpu.regs.SP = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     cpu.regs.Q  = 0;
 }
 
 // PUSH IX / PUSH IY  — 15 T-states: 4+4+1+3+3
 void handle_dd_fd_push_ix(Z80& cpu) {
-    uint16_t val = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t val = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     cpu.wait(1);
     cpu.write(--cpu.regs.SP, val >> 8);
     cpu.write(--cpu.regs.SP, val & 0xFF);
@@ -707,13 +709,13 @@ void handle_dd_fd_pop_ix(Z80& cpu) {
     uint16_t lo = cpu.read(cpu.regs.SP++);
     uint16_t hi = cpu.read(cpu.regs.SP++);
     uint16_t v  = (hi << 8) | lo;
-    if (cpu.prefix_ix) cpu.regs.IX = v; else cpu.regs.IY = v;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX = v; else cpu.regs.IY = v;
     cpu.regs.Q = 0;
 }
 
 // EX (SP),IX / EX (SP),IY  — 23 T-states
 void handle_dd_fd_ex_sp_ix(Z80& cpu) {
-    uint16_t ix   = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix   = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     uint16_t sp   = cpu.regs.SP;
     uint8_t  lo   = cpu.read(sp);
     uint8_t  hi   = cpu.read(sp + 1);
@@ -722,14 +724,14 @@ void handle_dd_fd_ex_sp_ix(Z80& cpu) {
     cpu.write(sp + 1, ix >> 8);
     cpu.write(sp,     ix & 0xFF);
     cpu.wait(2);
-    if (cpu.prefix_ix) cpu.regs.IX = val; else cpu.regs.IY = val;
+    if (cpu.active_index == IndexReg::IX) cpu.regs.IX = val; else cpu.regs.IY = val;
     cpu.regs.MEMPTR = val;
     cpu.regs.Q = 0;
 }
 
 // JP (IX) / JP (IY)
 void handle_dd_fd_jp_ix(Z80& cpu) {
-    cpu.regs.PC = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    cpu.regs.PC = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     cpu.regs.Q  = 0;
 }
 
@@ -835,7 +837,7 @@ void handle_dd_fd_alu_ixhl(Z80& cpu) {
 // DD/FD: ALU with (IX+d)/(IY+d)  — 19 T-states each
 // ============================================================
 void handle_dd_fd_alu_ixd(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
@@ -897,7 +899,7 @@ void handle_dd_fd_alu_ixd(Z80& cpu) {
 
 // INC (IX+d)  — 23 T-states: 4+4+3+5+3+1+3
 void handle_dd_fd_inc_ixd(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
@@ -912,7 +914,7 @@ void handle_dd_fd_inc_ixd(Z80& cpu) {
 
 // DEC (IX+d)  — 23 T-states
 void handle_dd_fd_dec_ixd(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
@@ -929,7 +931,7 @@ void handle_dd_fd_dec_ixd(Z80& cpu) {
 // ADC A, (IX+d) / ADC A, (IY+d) — DD/FD 8E / FD 8E
 // ============================================================
 void handle_dd_fd_adc_ixd(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
@@ -946,7 +948,7 @@ void handle_dd_fd_adc_ixd(Z80& cpu) {
 // SBC A, (IX+d) / SBC A, (IY+d) — DD/FD 9E / FD 9E
 // ============================================================
 void handle_dd_fd_sbc_ixd(Z80& cpu) {
-    uint16_t ix     = cpu.prefix_ix ? cpu.regs.IX : cpu.regs.IY;
+    uint16_t ix     = cpu.active_index == IndexReg::IX ? cpu.regs.IX : cpu.regs.IY;
     int8_t   offset = (int8_t)cpu.read(cpu.regs.PC++);
     cpu.wait(5);
     uint16_t addr   = (ix + offset) & 0xFFFF;
